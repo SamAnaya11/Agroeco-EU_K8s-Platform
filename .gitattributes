@@ -1,0 +1,12 @@
+# Finales de línea: todo el texto se guarda y se extrae con LF.
+# El proyecto se edita en Windows (VS Code) pero se ejecuta en Linux
+# (WSL, contenedores y Kubernetes), donde CRLF rompe scripts y YAML.
+* text=auto eol=lf
+
+# Binarios: Git no debe convertir nada en ellos
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.tgz  binary

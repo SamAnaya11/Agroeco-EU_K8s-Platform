@@ -1,0 +1,32 @@
+# Configuración del clúster local k3d (k3s dentro de contenedores Docker).
+# Uso:  k3d cluster create --config k3d/cluster.yaml
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: agroeco
+
+# 1 nodo servidor (plano de control) + 2 agentes (donde corren las cargas)
+servers: 1
+agents: 2
+
+# Versión de k3s fijada (canal estable verificado: v1.37.2+k3s1).
+# En las etiquetas de Docker el "+" se escribe "-".
+image: rancher/k3s:v1.37.2-k3s1
+
+# API de Kubernetes solo en localhost: no se expone a la red local
+kubeAPI:
+  hostIP: "127.0.0.1"
+  hostPort: "6550"
+
+options:
+  k3s:
+    extraArgs:
+      # Traefik (controlador de ingress de k3s) no hace falta: el acceso a
+      # ArgoCD y Grafana será por "kubectl port-forward". Se ahorra memoria.
+      - arg: --disable=traefik
+        nodeFilters:
+          - server:*
+  kubeconfig:
+    # Fusiona el acceso en ~/.kube/config y lo deja como contexto activo
+    updateDefaultKubeconfig: true
+    switchCurrentContext: true

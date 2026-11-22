@@ -1,0 +1,9 @@
+# Lo que NO entra en la imagen: cachés, datos locales y cualquier secreto
+__pycache__/
+*.py[cod]
+.venv/
+data/
+.env
+.env.*
+Dockerfile
+.dockerignore

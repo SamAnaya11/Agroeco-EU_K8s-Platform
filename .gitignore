@@ -1,0 +1,48 @@
+# ---------------------------------------------------------------
+# Secretos y credenciales: NUNCA en Git
+# ---------------------------------------------------------------
+.env
+.env.*
+!.env.example
+# Manifiestos de Secret reales (en el repo solo existe *.example.yaml)
+*secret*.yaml
+!*secret*.example.yaml
+# kubeconfig exportados a mano
+kubeconfig*
+*.kubeconfig
+
+# ---------------------------------------------------------------
+# Terraform (Fase 6): el estado puede contener IDs y datos de Azure
+# ---------------------------------------------------------------
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+crash.log
+.terraform.tfstate.lock.info
+
+# ---------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Datos descargados de Eurostat en pruebas locales
+data/
+
+# ---------------------------------------------------------------
+# Helm: paquetes generados y dependencias descargadas
+# ---------------------------------------------------------------
+*.tgz
+charts/*/charts/
+
+# ---------------------------------------------------------------
+# Editor y sistema
+# ---------------------------------------------------------------
+.vscode/
+*.swp
+Thumbs.db
+Desktop.ini

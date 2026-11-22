@@ -1,0 +1,17 @@
+# Dependencias del ETL, todas fijadas (directas e indirectas) para que la
+# imagen sea reproducible. Versiones verificadas en PyPI (noviembre 2026).
+
+# --- Transformación ---------------------------------------------------
+# pandas 2.x: misma versión mayor que el proyecto original (pandas 3 cambia el
+# tipo de texto por defecto y podría alterar la limpieza)
+pandas==2.3.3
+numpy==2.3.5
+python-dateutil==2.9.0.post0
+six==1.17.0
+pytz==2026.6
+tzdata==2026.6
+
+# --- Carga en PostgreSQL ------------------------------------------------
+# psycopg 3 con libpq incluida en el paquete (no hace falta instalar nada del sistema)
+psycopg==3.3.9
+psycopg-binary==3.3.9

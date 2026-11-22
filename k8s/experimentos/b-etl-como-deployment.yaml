@@ -1,0 +1,84 @@
+# EXPERIMENTO B: el ETL desplegado (mal) como Deployment.
+#
+# Mismo contenedor, configuración y seguridad que el Job. La única diferencia
+# es el tipo de objeto. Un Deployment mantiene N réplicas SIEMPRE en marcha
+# y solo admite restartPolicy: Always, así que cuando el ETL termina con
+# éxito (código 0) Kubernetes lo trata como un servicio caído y lo reinicia,
+# con esperas crecientes (10 s, 20 s, 40 s... hasta 5 min): CrashLoopBackOff.
+#
+# Consecuencias si fuera el despliegue real:
+#   - descarga Eurostat una y otra vez (carga innecesaria sobre una API pública);
+#   - con ETL_CARGAR_BD=true, borraría y recargaría las tablas en bucle;
+#   - el estado "CrashLoopBackOff" oculta si la ejecución fue bien o mal.
+#
+# Está en k8s/experimentos/ para que "kubectl apply -f k8s/" no lo aplique.
+# Uso:    kubectl apply  -f k8s/experimentos/b-etl-como-deployment.yaml
+# Borrar: kubectl delete -f k8s/experimentos/b-etl-como-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agroeco-etl-como-deployment
+  namespace: agroeco
+  labels:
+    app.kubernetes.io/name: agroeco-etl-experimento-b
+    app.kubernetes.io/part-of: agroeco-eu
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agroeco-etl-experimento-b
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agroeco-etl-experimento-b
+        app.kubernetes.io/part-of: agroeco-eu
+    spec:
+      # restartPolicy: Always  <- implícito y obligatorio en un Deployment
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: etl
+          image: agroeco-etl:0.1.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: agroeco-etl-config
+          env:
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: agroeco-db-app
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: agroeco-db-app
+                  key: password
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: datos
+              mountPath: /datos
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: datos
+          emptyDir:
+            sizeLimit: 500Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 100Mi

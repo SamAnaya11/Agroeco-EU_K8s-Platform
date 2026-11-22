@@ -1,0 +1,25 @@
+# Parámetros del ETL que NO son secretos. Llegan al contenedor como
+# variables de entorno (envFrom). Usuario y contraseña van en el Secret.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agroeco-etl-config
+  namespace: agroeco
+  labels:
+    app.kubernetes.io/name: agroeco-etl
+    app.kubernetes.io/part-of: agroeco-eu
+data:
+  # Carpeta de raw/ y processed/ (volumen emptyDir montado en el pod)
+  ETL_DIR_DATOS: "/datos"
+  ETL_NIVEL_LOG: "INFO"
+
+  # Fase 1: todavía no hay PostgreSQL en el clúster -> solo extracción y limpieza.
+  # En la Fase 2 se cambia a "true".
+  ETL_CARGAR_BD: "false"
+
+  # Conexión a PostgreSQL (variables estándar de libpq).
+  # agroeco-pg-rw = Service que crea CloudNativePG y que apunta siempre a la
+  # instancia primaria (también después de un failover).
+  PGHOST: "agroeco-pg-rw"
+  PGPORT: "5432"
+  PGDATABASE: "agroeco"

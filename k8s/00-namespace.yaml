@@ -1,0 +1,12 @@
+# Espacio de nombres del proyecto: ETL y (en la Fase 2) PostgreSQL.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agroeco
+  labels:
+    app.kubernetes.io/part-of: agroeco-eu
+    # Pod Security Standards: nivel "restricted" (el más estricto).
+    # El clúster rechaza pods que corran como root, escalen privilegios
+    # o mantengan capacidades de Linux.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted

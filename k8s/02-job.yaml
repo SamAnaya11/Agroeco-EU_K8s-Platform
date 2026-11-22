@@ -1,0 +1,71 @@
+# Ejecución puntual del ETL (equivale al disparador HTTP manual de Azure).
+# Un Job ejecuta pods hasta que uno termina con éxito (código de salida 0).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: agroeco-etl-manual
+  namespace: agroeco
+  labels:
+    app.kubernetes.io/name: agroeco-etl
+    app.kubernetes.io/part-of: agroeco-eu
+spec:
+  backoffLimit: 2                 # hasta 2 reintentos si el pod falla
+  activeDeadlineSeconds: 1800     # nunca más de 30 minutos en total
+  ttlSecondsAfterFinished: 86400  # el Job terminado se borra solo a las 24 h
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agroeco-etl
+        app.kubernetes.io/part-of: agroeco-eu
+    spec:
+      restartPolicy: Never        # cada reintento es un pod nuevo (logs separados)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001            # los volúmenes montados pertenecen al grupo 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: etl
+          image: agroeco-etl:0.1.0
+          imagePullPolicy: IfNotPresent   # imagen importada en k3d: no se descarga
+          envFrom:
+            - configMapRef:
+                name: agroeco-etl-config
+          env:
+            # Credenciales desde el Secret (nunca en el ConfigMap ni en Git)
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: agroeco-db-app
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: agroeco-db-app
+                  key: password
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 1Gi         # sin límite de CPU: se evita ralentizar pandas
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: datos
+              mountPath: /datos
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # raw/ y processed/ de esta ejecución: se borran al terminar el pod
+        - name: datos
+          emptyDir:
+            sizeLimit: 500Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 100Mi
