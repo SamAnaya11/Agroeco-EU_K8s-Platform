@@ -38,51 +38,58 @@ momento exacto de cada una con el aviso **📸 CAPTURA NN**.
 | 08b | `08b_exp_A_autocuracion.png` | Experimento A: `kubectl get events` del Job | Dos `SuccessfulCreate` y `Completed` | — |
 | 08c | `08c_exp_A_tiempos.png` | Experimento A (segunda ejecución): `podReplacementPolicy`, `succeeded`/`failed` y eventos con hora | `TerminatingOrFailed`, `exitosos: 1 fallidos: 1`; `Killing` 14:17:29Z → `SuccessfulCreate` 14:17:38Z (retraso de reintento de ~10 s) | — |
 | 09 | `09_exp_B_job_vs_deployment.png` | Experimento B: el ETL como Deployment | `CrashLoopBackOff` / reinicios continuos frente al Job `Complete` | — |
+| 10 | `10_gitleaks_fase1.png` | Cierre de la Fase 1, tras el primer commit: `gitleaks dir . --redact -v` y `gitleaks git --redact -v` | `no leaks found` en el directorio y en el historial | Usuario del prompt |
 
 ### Fase 2 – PostgreSQL con CloudNativePG
 
 | Nº | Archivo | Paso exacto | Qué debe verse | Tapar |
 |----|---------|-------------|----------------|-------|
-| 10 | `10_cnpg_operador.png` | `helm list -n cnpg-system` y pods del operador | Operador `Running` y versión del chart | — |
-| 11 | `11_cluster_postgres.png` | `kubectl get cluster,pods,pvc -n agroeco` | 2 instancias (primaria y réplica) `Running` y PVC `Bound` | — |
-| 12 | `12_consulta_datos.png` | Consulta `psql` de recuento por tabla | Filas cargadas en las 6 tablas | Contraseña |
-| 13 | `13_exp_C_failover.png` | Experimento C: borrar el pod primario | Cambio de primaria y la consulta sigue respondiendo | — |
-| 14 | `14_backup_barman.png` | _(opcional)_ Backup con el Barman Cloud Plugin | Backup `completed` y objetos en el bucket | Claves de acceso S3 |
+| 11 | `11_cnpg_operador.png` | `helm list -n cnpg-system` y pods del operador | Operador `Running` y versión del chart | — |
+| 12a | `12a_cluster_postgres.png` | Fase 2, tras crear el Cluster: `kubectl get cluster`, pods con rol y nodo, `get pvc` y `get svc` | `Cluster in healthy state`, 2/2 instancias; primaria y réplica en **nodos distintos**; 2 PVC `Bound`; Services `-rw`, `-ro`, `-r` | Usuario del prompt |
+| 12b | `12b_cnpg_status.png` | Fase 2, a continuación: `kubectl cnpg status agroeco-pg -n agroeco` | Primaria, réplica en *streaming* y estado sano del clúster | Usuario del prompt |
+| 13a | `13a_consulta_datos.png` | Fase 2, tras relanzar el Job con carga: `kubectl cnpg psql` con el recuento por tabla en la primaria (y en la réplica) | Filas en las 6 tablas (28, 17, 13529, 620, 2015, 1395) y hectáreas de España desde la vista | Usuario del prompt |
+| 13b | `13b_conexion_tls.png` | Fase 2, a continuación: log de `agroeco-pg-1` filtrado por `connection authorized` del ETL | `application_name=agroeco-etl SSL enabled (protocol=TLSv1.3…)` | Usuario del prompt |
+| 14a | `14a_exp_C_log_cliente.png` | Experimento C, terminal Ubuntu 2: `kubectl logs -f exp-c-cliente` mientras en la terminal Ubuntu 1 se borra `agroeco-pg-1` | Líneas `primaria 13529` con la IP de `agroeco-pg-1`, los `ERROR` del corte y de nuevo `primaria 13529` con la IP de `agroeco-pg-2` | Usuario del prompt |
+| 14b | `14b_exp_C_cnpg_status.png` | Experimento C, terminal Ubuntu 1, tras el failover: `kubectl cnpg status agroeco-pg -n agroeco` | Primaria `agroeco-pg-2`, réplica `agroeco-pg-1` en *streaming* y `Cluster in healthy state` | Usuario del prompt |
+| 14c | `14c_exp_C_job_nueva_primaria.png` | Experimento C, terminal Ubuntu 1: Job del ETL relanzado tras el failover | Log con `Conectando a PostgreSQL (agroeco@agroeco-pg-rw…)`, las 6 tablas insertadas y `Complete 1/1` | Usuario del prompt |
+| 15 | `15_gitleaks_fase2.png` | Cierre de la Fase 2, antes del commit: `gitleaks dir . --redact -v` y `gitleaks git --redact -v` | `no leaks found` en el directorio y en el historial | Usuario del prompt |
+| 16a | `16a_backup_completado.png` | _(pendiente, bloque de backup)_ Tras el backup bajo demanda con el Barman Cloud Plugin: `kubectl get backup` y listado del bucket en Garage | Backup `completed` y objetos de la copia base y del WAL en el bucket | Claves de acceso S3 |
+| 16b | `16b_restauracion.png` | _(pendiente, bloque de backup)_ Tras crear `agroeco-pg-restore` desde el backup: `kubectl get cluster` y recuento por tabla | Clúster restaurado `healthy` y los mismos recuentos (28, 17, 13529, 620, 2015, 1395) | Usuario del prompt |
 
 ### Fase 3 – Helm chart propio
 
 | Nº | Archivo | Paso exacto | Qué debe verse | Tapar |
 |----|---------|-------------|----------------|-------|
-| 15 | `15_helm_lint_template.png` | `helm lint` y extracto de `helm template` | `0 chart(s) failed` y el CronJob generado | — |
-| 16 | `16_helm_install_upgrade.png` | `helm history` tras instalar y actualizar | Revisiones 1 y 2 | — |
-| 17 | `17_exp_D_entornos.png` | Experimento D: `helm diff` / `diff` de dev y prod | Diferencias de horario y recursos | — |
+| 17 | `17_helm_lint_template.png` | `helm lint` y extracto de `helm template` | `0 chart(s) failed` y el CronJob generado | — |
+| 18 | `18_helm_install_upgrade.png` | `helm history` tras instalar y actualizar | Revisiones 1 y 2 | — |
+| 19 | `19_exp_D_entornos.png` | Experimento D: `helm diff` / `diff` de dev y prod | Diferencias de horario y recursos | — |
 
 ### Fase 4 – GitOps y CI/CD
 
 | Nº | Archivo | Paso exacto | Qué debe verse | Tapar |
 |----|---------|-------------|----------------|-------|
-| 18 | `18_github_actions.png` | Ejecución del workflow en GitHub | Todos los pasos en verde | Correo si aparece |
-| 19 | `19_ghcr_paquete.png` | Página del paquete en ghcr.io | Imagen con su etiqueta | Correo si aparece |
-| 20 | `20_argocd_app.png` | Interfaz de ArgoCD por port-forward | Aplicación `Synced` y `Healthy` | Contraseña de admin |
-| 21 | `21_exp_E_drift.png` | Experimento E (1): cambio manual con `kubectl` | ArgoCD detecta `OutOfSync` y lo revierte | — |
-| 22 | `22_exp_E_cambio_git.png` | Experimento E (2): commit en Git | ArgoCD aplica el cambio solo | — |
+| 20 | `20_github_actions.png` | Ejecución del workflow en GitHub | Todos los pasos en verde | Correo si aparece |
+| 21 | `21_ghcr_paquete.png` | Página del paquete en ghcr.io | Imagen con su etiqueta | Correo si aparece |
+| 22 | `22_argocd_app.png` | Interfaz de ArgoCD por port-forward | Aplicación `Synced` y `Healthy` | Contraseña de admin |
+| 23 | `23_exp_E_drift.png` | Experimento E (1): cambio manual con `kubectl` | ArgoCD detecta `OutOfSync` y lo revierte | — |
+| 24 | `24_exp_E_cambio_git.png` | Experimento E (2): commit en Git | ArgoCD aplica el cambio solo | — |
 
 ### Fase 5 – Observabilidad _(opcional)_
 
 | Nº | Archivo | Paso exacto | Qué debe verse | Tapar |
 |----|---------|-------------|----------------|-------|
-| 23 | `23_grafana_cnpg.png` | Dashboard de CloudNativePG en Grafana | Métricas del clúster PostgreSQL | Contraseña de Grafana |
-| 24 | `24_exp_F_alerta.png` | Experimento F: Job fallido forzado | Alerta en estado `Firing` | — |
+| 25 | `25_grafana_cnpg.png` | Dashboard de CloudNativePG en Grafana | Métricas del clúster PostgreSQL | Contraseña de Grafana |
+| 26 | `26_exp_F_alerta.png` | Experimento F: Job fallido forzado | Alerta en estado `Firing` | — |
 
 ### Fase 6 – AKS _(opcional, con coste)_
 
 | Nº | Archivo | Paso exacto | Qué debe verse | Tapar |
 |----|---------|-------------|----------------|-------|
-| 25 | `25_aks_despliegue.png` | `kubectl get nodes` y `helm list` en AKS | Nodo `Ready` y el chart desplegado | ID de suscripción, IP pública |
-| 26 | `26_aks_destroy.png` | `terraform destroy` | `Destroy complete!` | ID de suscripción |
+| 27 | `27_aks_despliegue.png` | `kubectl get nodes` y `helm list` en AKS | Nodo `Ready` y el chart desplegado | ID de suscripción, IP pública |
+| 28 | `28_aks_destroy.png` | `terraform destroy` | `Destroy complete!` | ID de suscripción |
 
 ### Cierre
 
 | Nº | Archivo | Paso exacto | Qué debe verse | Tapar |
 |----|---------|-------------|----------------|-------|
-| 27 | `27_exp_G_limpieza.png` | Experimento G: `k3d cluster delete` y `k3d cluster list` | Clúster borrado y lista vacía | Usuario del prompt |
+| 29 | `29_exp_G_limpieza.png` | Experimento G: `k3d cluster delete` y `k3d cluster list` | Clúster borrado y lista vacía | Usuario del prompt |

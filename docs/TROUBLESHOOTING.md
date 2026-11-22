@@ -9,6 +9,7 @@ solución aplicada y cómo evitar que se repita.
 | Nº | Fase | Incidencia |
 |----|------|------------|
 | [TS-01](#ts-01--un-job-parece-haber-desaparecido-falso-positivo-de-la-terminal) | 1 | Un Job parece haber desaparecido (falso positivo de la terminal) |
+| [TS-02](#ts-02--nombres-de-captura-que-no-coinciden-con-el-leeme) | 2 | Nombres de captura que no coinciden con el LEEME |
 
 ---
 
@@ -45,6 +46,26 @@ solución aplicada y cómo evitar que se repita.
 
   Las salidas largas se guardan además en un archivo con
   `| tee salida.txt`, para revisarlas fuera de la terminal.
+
+---
+
+## TS-02 · Nombres de captura que no coinciden con el LEEME
+
+- **Fase:** 2 – PostgreSQL con CloudNativePG (al preparar el commit de cierre).
+- **Síntoma:** `git status` mostró `docs/capturas/gitleaks_fase1.png`, una
+  captura que ya debía llamarse `10_gitleaks_fase1.png`. Al revisar la
+  carpeta aparecieron otros tres nombres distintos de los del LEEME, ya
+  subidos en el commit de la Fase 1: `03b_docker_build.png`,
+  `04a_docker_run_carga.png.png` y `04b_docker_run_consultas.png.png`.
+- **Causa:** las capturas se guardan y renombran desde Windows. El Explorador
+  oculta las extensiones conocidas, así que al escribir `….png` se añadió una
+  segunda extensión. El renombrado de la captura 10 no se llegó a guardar.
+- **Solución:** se renombraron con `git mv`, que conserva el historial, a
+  `10_gitleaks_fase1.png`, `03_docker_build.png`,
+  `04a_docker_run_carga.png` y `04b_docker_run_consultas.png`.
+- **Prevención:** antes de cada commit se compara la carpeta con la lista del
+  LEEME (`ls docs/capturas`). En el Explorador de Windows se activa
+  *Ver → Mostrar → Extensiones de nombre de archivo*.
 
 ---
 

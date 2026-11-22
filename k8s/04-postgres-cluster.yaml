@@ -1,0 +1,81 @@
+# Clúster PostgreSQL gestionado por el operador CloudNativePG (Fase 2).
+#
+# Este archivo no describe pods ni volúmenes: declara el PostgreSQL que se
+# quiere y el operador crea y mantiene todo lo necesario:
+#   - Pods:      agroeco-pg-1, agroeco-pg-2 (una primaria y una réplica)
+#   - Volúmenes: PVC agroeco-pg-1, agroeco-pg-2
+#   - Services:  agroeco-pg-rw (siempre la primaria, también tras un failover)
+#                agroeco-pg-ro (solo réplicas)   agroeco-pg-r (cualquiera)
+#   - Certificados TLS propios: las conexiones van cifradas
+#
+# Requisitos previos:
+#   - Operador CloudNativePG instalado (chart cloudnative-pg 0.29.2 / 1.30.2)
+#   - Secret agroeco-db-app (tipo kubernetes.io/basic-auth) creado con kubectl
+#
+# Limitaciones de este diseño local (aceptadas para la demostración):
+#   1. Volumen atado a su nodo. Con local-path el disco está en el nodo donde
+#      corre la instancia. Si se borra un pod, el operador lo recrea en ese
+#      mismo nodo; si desapareciera el nodo entero, esa instancia no podría
+#      moverse. En AKS se usaría un disco gestionado de Azure, que puede
+#      moverse entre nodos de la misma zona.
+#   2. Memoria solicitada < límite. CloudNativePG recomienda en producción
+#      requests = limits para que Kubernetes no expulse a PostgreSQL cuando el
+#      nodo va justo de memoria. Aquí se reserva menos para ahorrar memoria en WSL.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: agroeco-pg
+  namespace: agroeco
+  labels:
+    app.kubernetes.io/name: agroeco-pg
+    app.kubernetes.io/part-of: agroeco-eu
+spec:
+  # Una primaria (lectura y escritura) y una réplica en streaming replication
+  instances: 2
+
+  # Imagen fijada. "minimal" en lugar de la "system" por defecto (obsoleta).
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.7-minimal-trixie
+
+  # Al cambiar la imagen: primero la réplica y después el cambio de primaria, sin intervención
+  primaryUpdateStrategy: unsupervised
+
+  storage:
+    size: 2Gi
+    storageClass: local-path
+
+  bootstrap:
+    initdb:
+      database: agroeco
+      owner: agroeco
+      # Contraseña del usuario de la aplicación: la del Secret creado con kubectl.
+      # Su clave "username" debe coincidir con "owner".
+      secret:
+        name: agroeco-db-app
+
+  # El superusuario postgres no tiene contraseña ni acceso por red.
+  # Para administrar: kubectl cnpg psql agroeco-pg (entra en el pod).
+  enableSuperuserAccess: false
+
+  # Las dos instancias SIEMPRE en nodos distintos: una caída de nodo no se lleva ambas
+  affinity:
+    enablePodAntiAffinity: true
+    podAntiAffinityType: required
+    topologyKey: kubernetes.io/hostname
+
+  postgresql:
+    parameters:
+      max_connections: "50"     # el ETL usa una sola conexión
+      shared_buffers: "128MB"
+      # Una línea de log por conexión aceptada ("connection authorized: ...
+      # SSL enabled (protocol=...)"): registro de accesos y prueba de que el
+      # ETL se conecta cifrado. Se aplica recargando la configuración, sin
+      # reiniciar. En PostgreSQL 18 admite una lista de aspectos; "on"
+      # equivale a receipt,authentication,authorization.
+      log_connections: "on"
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi              # ver limitación 2 en la cabecera

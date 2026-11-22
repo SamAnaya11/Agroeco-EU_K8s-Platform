@@ -1,0 +1,82 @@
+# EXPERIMENTO C: cliente que consulta PostgreSQL cada 2 segundos durante un failover.
+#
+# En cada vuelta abre una conexión NUEVA al Service agroeco-pg-rw (el mismo
+# que usa el ETL) y escribe una línea:
+#     hora  IP-del-servidor  primaria|replica  filas-de-fact_superficie
+# o "ERROR: ..." si no puede conectar. Al borrar el pod primario se ve el
+# corte, el cambio de IP (la réplica ascendida) y que los datos siguen ahí.
+#
+# Está en k8s/experimentos/ para que "kubectl apply -f k8s/" no lo aplique.
+# Uso:    kubectl apply -f k8s/experimentos/c-cliente-psql.yaml
+#         kubectl -n agroeco logs -f exp-c-cliente
+# Borrar: kubectl delete -f k8s/experimentos/c-cliente-psql.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: exp-c-cliente
+  namespace: agroeco
+  labels:
+    app.kubernetes.io/name: agroeco-exp-c-cliente
+    app.kubernetes.io/part-of: agroeco-eu
+spec:
+  restartPolicy: Never
+  # El bucle es PID 1 y no atiende SIGTERM: con 2 s de gracia el borrado es rápido
+  terminationGracePeriodSeconds: 2
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 26             # usuario "postgres" de la imagen (verificado en su configuración)
+    runAsGroup: 26
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: cliente
+      # Misma imagen que las instancias: trae psql y ya está descargada en los nodos
+      image: ghcr.io/cloudnative-pg/postgresql:18.7-minimal-trixie
+      imagePullPolicy: IfNotPresent
+      command: ["bash", "-c"]
+      args:
+        - |
+          while true; do
+            hora=$(date -u +%H:%M:%S)
+            # -A sin alineación, -t sin cabeceras, -q silencioso, -X sin .psqlrc
+            if salida=$(psql -AtqX -F '  ' -c "SELECT inet_server_addr(),
+                  CASE WHEN pg_is_in_recovery() THEN 'replica' ELSE 'primaria' END,
+                  (SELECT count(*) FROM fact_superficie)" 2>&1); then
+              echo "$hora  $salida"
+            else
+              echo "$hora  ERROR: $(echo "$salida" | head -n 1)"
+            fi
+            sleep 2
+          done
+      env:
+        - name: PGHOST
+          value: agroeco-pg-rw      # el Service que sigue siempre a la primaria
+        - name: PGDATABASE
+          value: agroeco
+        - name: PGSSLMODE
+          value: require            # cifrada, como el ETL
+        - name: PGCONNECT_TIMEOUT
+          value: "3"                # un servidor caído da error en 3 s, no bloquea el bucle
+        - name: PGAPPNAME
+          value: exp-c-cliente      # identifica estas conexiones en el log de PostgreSQL
+        - name: PGUSER
+          valueFrom:
+            secretKeyRef:
+              name: agroeco-db-app
+              key: username
+        - name: PGPASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: agroeco-db-app
+              key: password
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 64Mi
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]

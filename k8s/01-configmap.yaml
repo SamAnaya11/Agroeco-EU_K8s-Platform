@@ -13,9 +13,9 @@ data:
   ETL_DIR_DATOS: "/datos"
   ETL_NIVEL_LOG: "INFO"
 
-  # Fase 1: todavía no hay PostgreSQL en el clúster -> solo extracción y limpieza.
-  # En la Fase 2 se cambia a "true".
-  ETL_CARGAR_BD: "false"
+  # Fase 2: PostgreSQL ya existe en el clúster (CloudNativePG) -> carga completa.
+  # (En la Fase 1 estaba en "false": solo extracción y limpieza.)
+  ETL_CARGAR_BD: "true"
 
   # Conexión a PostgreSQL (variables estándar de libpq).
   # agroeco-pg-rw = Service que crea CloudNativePG y que apunta siempre a la
@@ -23,3 +23,10 @@ data:
   PGHOST: "agroeco-pg-rw"
   PGPORT: "5432"
   PGDATABASE: "agroeco"
+
+  # Conexión cifrada obligatoria. Por defecto libpq usa "prefer" (cifra si puede
+  # y, si no, se conecta sin cifrar sin avisar) y el pg_hba de CloudNativePG
+  # también acepta conexiones sin TLS con contraseña: la obligación la pone el
+  # cliente. "require" cifra pero no verifica la identidad del servidor;
+  # "verify-full" (montando la CA agroeco-pg-ca) queda para el chart de la Fase 3.
+  PGSSLMODE: "require"
