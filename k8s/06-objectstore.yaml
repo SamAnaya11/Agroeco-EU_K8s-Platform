@@ -1,0 +1,54 @@
+# Destino de los backups de PostgreSQL para el Barman Cloud Plugin.
+#
+# Sustituye al bloque "barmanObjectStore" del Cluster (obsoleto): el destino
+# es un recurso propio, que el Cluster solo referencia por su nombre
+# (spec.plugins[].parameters.barmanObjectName) y que podrían compartir
+# varios clústeres. Barman separa cada uno en su carpeta (serverName).
+#
+# Requisitos previos:
+#   - Barman Cloud Plugin instalado en cnpg-system (chart plugin-barman-cloud 0.9.0)
+#   - Garage en marcha (k8s/05-garage.yaml) con el bucket agroeco-backups
+#   - Secret agroeco-s3-creds creado con kubectl (forma:
+#     k8s/ejemplos/s3-creds.example.yaml)
+#
+# Estructura en el bucket:
+#   s3://agroeco-backups/agroeco-pg/base/   copias base (backups)
+#   s3://agroeco-backups/agroeco-pg/wals/   WAL archivados de forma continua
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: agroeco-backup-store
+  namespace: agroeco
+  labels:
+    app.kubernetes.io/name: agroeco-backup-store
+    app.kubernetes.io/part-of: agroeco-eu
+spec:
+  # El plugin borra los backups de más de 7 días y los WAL que ya no
+  # necesita ninguna copia base conservada
+  retentionPolicy: "7d"
+
+  configuration:
+    destinationPath: s3://agroeco-backups/
+    # Service de Garage. HTTP sin TLS porque el tráfico no sale del clúster
+    # (limitación aceptada; en producción, HTTPS hacia el almacenamiento)
+    endpointURL: http://garage.garage.svc.cluster.local:3900
+    s3Credentials:
+      accessKeyId:
+        name: agroeco-s3-creds
+        key: ACCESS_KEY_ID
+      secretAccessKey:
+        name: agroeco-s3-creds
+        key: ACCESS_SECRET_KEY
+    # gzip: menos espacio en el bucket a cambio de algo de CPU en la primaria
+    wal:
+      compression: gzip
+    data:
+      compression: gzip
+
+  # Variables para el sidecar del plugin en cada pod de PostgreSQL
+  instanceSidecarConfiguration:
+    env:
+      # boto3 firma por defecto con us-east-1 y Garage solo acepta su propia
+      # región (s3_region en k8s/05-garage.yaml)
+      - name: AWS_DEFAULT_REGION
+        value: garage

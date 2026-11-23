@@ -5,7 +5,7 @@ Migración del pipeline ETL de agricultura ecológica de la UE
 serverless en Azure) a una plataforma Kubernetes con PostgreSQL gestionado
 por operador, empaquetado con Helm, despliegue GitOps y CI/CD.
 
-> Estado: en construcción (Fase 2 – PostgreSQL con CloudNativePG).
+> Estado: en construcción (Fase 2 completada, con backup y restauración probados; siguiente: Fase 3 – chart de Helm).
 
 ## Qué hace
 
@@ -15,6 +15,10 @@ Cada mes, un CronJob de Kubernetes ejecuta el ETL:
    (superficie ecológica por cultivo, % de SAU ecológica, operadores y ganadería).
 2. **Transformación**: limpieza con pandas y modelo en estrella (2 dimensiones y 4 hechos).
 3. **Carga**: PostgreSQL de alta disponibilidad (primaria y réplica) gestionado por CloudNativePG.
+
+La base de datos archiva su WAL de forma continua en un almacenamiento S3
+(Garage) con el Barman Cloud Plugin. La restauración en un clúster nuevo está
+probada y devuelve los mismos datos.
 
 ## Arquitectura
 
@@ -33,6 +37,11 @@ flowchart LR
         end
         cnpg[Operador CloudNativePG] --> pg1
         cnpg --> pg2
+        cnpg <-->|gRPC + TLS mutuo<br/>cert-manager| plugin[Barman Cloud Plugin]
+        subgraph nsg["namespace garage"]
+            garage[(Garage S3<br/>bucket agroeco-backups)]
+        end
+        pg1 -->|WAL continuo +<br/>copias base| garage
     end
 
     chart -->|HTTPS| eurostat[API Eurostat]
@@ -53,6 +62,9 @@ _(Se completará con las versiones exactas verificadas en cada fase.)_
 | Operador de base de datos | CloudNativePG (chart `cloudnative-pg`) | 1.30.2 (chart 0.29.2) |
 | Base de datos | PostgreSQL (`ghcr.io/cloudnative-pg/postgresql:18.7-minimal-trixie`) | 18.7 |
 | CLI de base de datos | Plugin `kubectl cnpg` | 1.30.2 |
+| Certificados (requisito del plugin de backup) | cert-manager (chart OCI `quay.io/jetstack/charts/cert-manager`) | v1.21.3 |
+| Backup de PostgreSQL | Barman Cloud Plugin (chart `plugin-barman-cloud`) | v0.16.0 (chart 0.9.0) |
+| Almacenamiento S3 para backups | Garage (`dxflrs/garage`), un solo nodo | v2.5.0 |
 | GitOps | ArgoCD | — |
 | CI/CD | GitHub Actions + ghcr.io | — |
 
@@ -66,6 +78,15 @@ _(Se completará con las versiones exactas verificadas en cada fase.)_
   k3s v1.37.2, alineado con la versión estable actual de Kubernetes y de
   kubectl. **En producción se usaría una versión de Kubernetes con soporte
   oficial del operador.**
+- **Kubernetes 1.37 con cert-manager 1.21.** El Barman Cloud Plugin necesita
+  cert-manager para el TLS mutuo entre el operador y el plugin. Según la
+  [tabla de versiones de cert-manager](https://cert-manager.io/docs/releases/),
+  la serie 1.21 (última publicada, v1.21.3) da soporte oficial a Kubernetes
+  de la 1.33 a la 1.36. La 1.37 todavía no figura en la tabla de ninguna
+  versión publicada; la 1.22 está anunciada para noviembre de 2026. Se acepta
+  como limitación del entorno de demostración, igual que con CloudNativePG
+  1.30, y se actualizará a la 1.22 cuando se publique. **En producción se
+  usaría una combinación con soporte oficial.**
 - **Imagen `minimal` de PostgreSQL.** CloudNativePG 1.30.2 usa por defecto la
   imagen `system`. Esas imágenes están marcadas como obsoletas, porque incluyen
   Barman para el método `barmanObjectStore`, también obsoleto. Se fija la
@@ -86,6 +107,39 @@ _(Se completará con las versiones exactas verificadas en cada fase.)_
      producción, CloudNativePG recomienda que sean iguales, para que
      Kubernetes no expulse a PostgreSQL cuando el nodo va justo de memoria.
      Aquí se reserva menos para ahorrar memoria en WSL.
+- **Backup con el Barman Cloud Plugin y un recurso `ObjectStore`**
+  ([`k8s/06-objectstore.yaml`](k8s/06-objectstore.yaml)). Se usa en lugar del
+  bloque `barmanObjectStore` del Cluster, que está obsoleto. El destino es un
+  recurso propio, que el Cluster solo referencia por su nombre
+  (`spec.plugins`). La primaria archiva cada WAL en cuanto se completa, y las
+  copias base se piden con recursos `Backup`. Juntos permiten restaurar hasta
+  el final de una copia o hasta cualquier instante posterior. Retención de 7
+  días y compresión gzip.
+- **Garage de un solo nodo dentro del clúster**
+  ([`k8s/05-garage.yaml`](k8s/05-garage.yaml)), como almacenamiento S3 en
+  lugar de MinIO, que está archivado. Garage no publica un chart oficial, así
+  que se despliega con manifiestos propios: un StatefulSet, porque el nodo
+  guarda su identidad y su layout en el volumen, y un Service solo con la API
+  S3. La API de administración no se activa, porque el CLI usa el canal RPC.
+  El `rpc_secret` y la clave S3 se crean con `kubectl create secret`, y la
+  clave pasa de `garage key create` al Secret sin mostrarse en pantalla.
+  Este diseño local tiene tres limitaciones aceptadas:
+  1. **Un solo nodo, en el mismo clúster que los datos.** Los objetos no
+     tienen copias y el backup comparte destino con el clúster k3d. En un
+     entorno real, el bucket estaría fuera del clúster, por ejemplo en Azure
+     Blob Storage o en otro centro de datos.
+  2. **HTTP sin TLS hacia Garage.** El tráfico no sale del clúster. En
+     producción, la conexión con el almacenamiento iría por HTTPS.
+  3. **Tamaño del volumen no garantizado.** `local-path` crea el volumen como
+     una carpeta del nodo y no aplica el tamaño del PVC (2 Gi) como límite.
+     Garage ve todo el disco virtual de WSL, y la capacidad de su layout
+     (1 GB) es un peso para repartir los datos, no una cuota.
+- **`primaryUpdateMethod: switchover`.** Cuando hay que recrear la primaria,
+  el operador promueve antes la réplica ya actualizada en lugar de reiniciar
+  la primaria en el sitio, que es el valor por defecto. Hay una excepción:
+  al activar por primera vez el archivado de WAL con el plugin, la primaria
+  se recrea en el sitio, porque sin el sidecar no podría completar el
+  switchover ([TS-03](docs/TROUBLESHOOTING.md#ts-03--no-hay-switchover-al-activar-el-barman-cloud-plugin-pese-a-primaryupdatemethod-switchover)).
 - **Raw y processed en un volumen `emptyDir`.** Sustituyen a Blob Storage con
   la misma estructura por fecha. El destino persistente de los datos es
   PostgreSQL.
@@ -361,10 +415,78 @@ Capturas: `14a_exp_C_log_cliente.png` (log del cliente: corte y cambio de IP),
 `14b_exp_C_cnpg_status.png` (estado tras el failover) y
 `14c_exp_C_job_nueva_primaria.png` (Job relanzado contra la nueva primaria).
 
+## Backup y restauración
+
+Sin un backup externo, la alta disponibilidad no protege frente a borrados
+o corrupción lógica, porque la réplica copia también los errores.
+
+**Procedimiento.**
+1. Se instalan cert-manager y el Barman Cloud Plugin, y se despliega Garage
+   con el bucket `agroeco-backups` y una clave de lectura y escritura sin
+   permisos de propietario.
+2. Se conecta `agroeco-pg` al plugin (`spec.plugins`), que empieza a
+   archivar el WAL de forma continua (`ContinuousArchiving=True`).
+3. Se lanza un backup bajo demanda
+   ([`k8s/07-backup.yaml`](k8s/07-backup.yaml)), con `method: plugin` y
+   `target: prefer-standby`.
+4. Se crea un clúster nuevo, `agroeco-pg-restore`
+   ([`k8s/08-postgres-restore.yaml`](k8s/08-postgres-restore.yaml)), a partir
+   de ese backup. No tiene `spec.plugins`, así que no escribe en el bucket.
+5. Se comparan los datos con el original y se borra el clúster restaurado.
+
+El contenido del bucket se lista con un Pod de un solo uso
+([`k8s/utilidades/s3-listado.yaml`](k8s/utilidades/s3-listado.yaml)), porque el
+CLI de Garage da el número de objetos pero no su lista.
+
+**Backup** (`agroeco-pg-backup-manual`).
+
+| Dato | Valor |
+|------|-------|
+| Instancia de origen | `agroeco-pg-1` (la réplica, por `prefer-standby`) |
+| ID / duración | `20261123T210625`, de 21:06:26 a 21:06:35 UTC (9 s) |
+| LSN inicial / final | `0/12000FE0` / `0/14000000` |
+| Contenido del bucket | `base/20261123T210625/` (`data.tar.gz` de 4,4 MiB y `backup.info`) y los WAL `…0011`, `…0012` y `…0013` comprimidos con gzip: 5 objetos, 4,4 MiB |
+
+**Restauración** (`agroeco-pg-restore`).
+
+| Comprobación | Resultado |
+|--------------|-----------|
+| Estado | `Cluster in healthy state`, 1/1, primaria `agroeco-pg-restore-1` |
+| Recuentos por tabla | 28, 17, 13 529, 620, 2 015 y 1 395: los mismos que el original |
+| Recuperación terminada | `pg_is_in_recovery() = false`, en una línea temporal nueva (3) |
+| Punto de recuperación | `00000003.history`: `2  0/14000000  no recovery target specified`. Se reprodujo el WAL hasta el final de la copia |
+| Bucket después de la prueba | Los mismos 5 objetos. No aparece ninguna ruta `agroeco-pg-restore/` ni ningún archivo de la línea temporal 3 |
+
+**Observaciones.**
+- **El backup termina justo en un límite de segmento.** El LSN final
+  `0/14000000` es el primer byte del segmento 0014, así que la copia solo
+  necesita el WAL hasta el 0013, que ya estaba archivado. La base no tenía
+  actividad, y en ese caso `archive_timeout` no cierra segmentos y
+  `pg_switch_wal()` no hace nada. Desde PostgreSQL 17, `pg_walfile_name()`
+  asigna un LSN situado en el límite al segmento que empieza en él, de ahí
+  que `endWal` sea el 0014.
+- **Sidecar temporal en el clúster restaurado.** El Job de recuperación y
+  el primer pod de la instancia llevan el sidecar del plugin. Cuando termina
+  el arranque, el operador recrea el pod sin él. Es un comportamiento
+  previsto del plugin v0.16.0 para los clústeres que solo lo usan para
+  recuperarse.
+- Al activar el plugin hubo dos efectos documentados en
+  [TS-03](docs/TROUBLESHOOTING.md#ts-03--no-hay-switchover-al-activar-el-barman-cloud-plugin-pese-a-primaryupdatemethod-switchover):
+  la primaria se recreó sin switchover, y hubo 6 fallos inocuos al archivar
+  el WAL 0011. Las otras dos sorpresas de la prueba están en
+  [TS-04](docs/TROUBLESHOOTING.md#ts-04--kubectl-apply-responde-configured-sin-haber-cambios)
+  (`configured` sin cambios) y
+  [TS-05](docs/TROUBLESHOOTING.md#ts-05--falta-00000002history-en-el-archivo-de-wal)
+  (historial de líneas temporales incompleto en el archivo).
+
+Capturas: `16a_backup_completado.png` (backup `completed` y listado del
+bucket) y `16b_restauracion.png` (clúster restaurado y recuentos).
+
 ## Tareas pendientes
 
 | Fase | Tarea | Motivo |
 |------|-------|--------|
+| 2 | Actualizar cert-manager a la serie 1.22 cuando se publique | La v1.21.3 no incluye Kubernetes 1.37 en su matriz de soporte (ver Decisiones técnicas). |
 | 3 | TLS con `PGSSLMODE=verify-full`: montar en el pod del ETL el certificado de la CA de CloudNativePG (`agroeco-pg-ca`, clave `ca.crt`) y apuntar a él con `PGSSLROOTCERT` | Con `require` la conexión va cifrada, pero no se verifica la identidad del servidor. En el chart, el Job y el CronJob salen de una sola plantilla, así que el cambio se hace una vez. |
 
 ## Mejoras posibles
@@ -380,6 +502,13 @@ Capturas: `14a_exp_C_log_cliente.png` (log del cliente: corte y cambio de IP),
   vaciar un nodo) no consumirían reintentos de `backoffLimit`. Como
   contrapartida, con `podFailurePolicy` la política de reemplazo pasa a ser
   `Failed`: el pod nuevo espera a que el anterior termine del todo.
+
+- **Backups programados.** Un recurso `ScheduledBackup` (por ejemplo,
+  diario) sustituiría al backup bajo demanda, y la retención de 7 días del
+  ObjectStore borraría las copias antiguas.
+- **Prueba de restauración periódica.** Automatizar lo que aquí se hizo a
+  mano: crear un clúster desde el último backup, comparar los recuentos y
+  borrarlo. Un backup que no se restaura con regularidad no está probado.
 
 ## Comparación con la versión serverless en Azure
 

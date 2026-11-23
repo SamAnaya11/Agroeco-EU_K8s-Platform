@@ -1,0 +1,67 @@
+# Prueba de restauración: clúster nuevo creado desde el backup de agroeco-pg.
+#
+# Un backup solo vale si se ha restaurado alguna vez. Este Cluster arranca
+# vacío y el operador lanza un Job de recuperación ("full-recovery"):
+#   1. Descarga la copia base de s3://agroeco-backups/agroeco-pg/base/
+#   2. Reproduce los WAL archivados hasta el último disponible
+#   3. Promueve la instancia (línea temporal nueva) y la deja en servicio
+# Después se comparan los recuentos por tabla con los del clúster original.
+#
+# Clúster temporal de verificación: una sola instancia y SIN spec.plugins,
+# así que no archiva WAL ni escribe nada en el bucket. Se borra al terminar
+# la prueba (kubectl delete -f k8s/08-postgres-restore.yaml).
+#
+# Requisitos previos: ObjectStore agroeco-backup-store y un backup completed.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: agroeco-pg-restore
+  namespace: agroeco
+  labels:
+    app.kubernetes.io/name: agroeco-pg-restore
+    app.kubernetes.io/part-of: agroeco-eu
+spec:
+  instances: 1
+
+  # La misma versión de PostgreSQL que el original: la copia base es física
+  # y solo se puede restaurar en la misma versión mayor
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.7-minimal-trixie
+
+  storage:
+    size: 2Gi
+    storageClass: local-path
+
+  bootstrap:
+    recovery:
+      # Origen: la entrada de externalClusters de abajo
+      source: agroeco-pg-backup
+      # La base y su propietario ya existen en la copia. Se indican para que
+      # el operador genere el Secret agroeco-pg-restore-app para ese usuario
+      # (con contraseña nueva) en lugar del "app" por defecto.
+      database: agroeco
+      owner: agroeco
+      # Sin recoveryTarget: se recupera hasta el último WAL archivado. Con
+      # recoveryTarget.targetTime se restauraría a un instante concreto (PITR).
+
+  externalClusters:
+    - name: agroeco-pg-backup
+      plugin:
+        name: barman-cloud.cloudnative-pg.io
+        parameters:
+          barmanObjectName: agroeco-backup-store
+          # Carpeta del bucket que se restaura: la del clúster original
+          serverName: agroeco-pg
+
+  enableSuperuserAccess: false
+
+  postgresql:
+    parameters:
+      max_connections: "50"
+      shared_buffers: "128MB"
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi

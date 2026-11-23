@@ -1,0 +1,27 @@
+# Backup bajo demanda de agroeco-pg con el Barman Cloud Plugin.
+#
+# Copia base completa del clúster en el ObjectStore agroeco-backup-store
+# (s3://agroeco-backups/agroeco-pg/base/<ID>/). Junto con los WAL que la
+# primaria archiva de forma continua, permite restaurar al final de la copia
+# o a cualquier instante posterior.
+#
+# Un Backup es una ejecución única: volver a aplicarlo no lanza otra copia.
+# Para una nueva, otro nombre (o "kubectl cnpg backup ... --method=plugin").
+# Para copias periódicas existe el recurso ScheduledBackup.
+apiVersion: postgresql.cnpg.io/v1
+kind: Backup
+metadata:
+  name: agroeco-pg-backup-manual
+  namespace: agroeco
+  labels:
+    app.kubernetes.io/name: agroeco-pg
+    app.kubernetes.io/part-of: agroeco-eu
+spec:
+  cluster:
+    name: agroeco-pg
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io
+  # La copia se lee de la réplica para no cargar la primaria; si no hay
+  # réplica sana, se usa la primaria (valor por defecto, escrito a propósito)
+  target: prefer-standby

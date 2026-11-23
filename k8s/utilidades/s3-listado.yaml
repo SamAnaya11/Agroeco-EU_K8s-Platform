@@ -1,0 +1,77 @@
+# Pod de un solo uso: lista el contenido del bucket de backups en Garage.
+#
+# El CLI de Garage da el número de objetos de un bucket, pero no su lista.
+# Este Pod ejecuta "aws s3 ls" contra la API S3 de Garage y termina.
+#
+# Uso:
+#   kubectl apply -f k8s/utilidades/s3-listado.yaml
+#   kubectl wait -n agroeco --for=jsonpath='{.status.phase}'=Succeeded pod/s3-listado --timeout=120s
+#   kubectl logs -n agroeco s3-listado
+#   kubectl delete -f k8s/utilidades/s3-listado.yaml
+#
+# Credenciales: las del Secret agroeco-s3-creds (creado con kubectl), como
+# variables de entorno; el Pod no las imprime.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: s3-listado
+  namespace: agroeco
+  labels:
+    app.kubernetes.io/name: s3-listado
+    app.kubernetes.io/part-of: agroeco-eu
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: aws-cli
+      # Versión fijada (última estable verificada en Docker Hub)
+      image: amazon/aws-cli:2.42.2
+      args:
+        - --endpoint-url
+        - http://garage.garage.svc.cluster.local:3900
+        - s3
+        - ls
+        - s3://agroeco-backups/
+        - --recursive
+        - --human-readable
+        - --summarize
+      env:
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: agroeco-s3-creds
+              key: ACCESS_KEY_ID
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: agroeco-s3-creds
+              key: ACCESS_SECRET_KEY
+        # Garage solo acepta firmas con su región (s3_region en k8s/05-garage.yaml)
+        - name: AWS_DEFAULT_REGION
+          value: garage
+        # Raíz en solo lectura: la configuración y la caché del CLI van a /tmp
+        - name: HOME
+          value: /tmp
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          memory: 256Mi
+  volumes:
+    - name: tmp
+      emptyDir: {}

@@ -11,6 +11,7 @@
 # Requisitos previos:
 #   - Operador CloudNativePG instalado (chart cloudnative-pg 0.29.2 / 1.30.2)
 #   - Secret agroeco-db-app (tipo kubernetes.io/basic-auth) creado con kubectl
+#   - Barman Cloud Plugin y ObjectStore agroeco-backup-store (backup)
 #
 # Limitaciones de este diseño local (aceptadas para la demostración):
 #   1. Volumen atado a su nodo. Con local-path el disco está en el nodo donde
@@ -38,6 +39,10 @@ spec:
 
   # Al cambiar la imagen: primero la réplica y después el cambio de primaria, sin intervención
   primaryUpdateStrategy: unsupervised
+  # Cómo se actualiza la primaria: promoviendo antes la réplica ya actualizada
+  # (switchover) en lugar de reiniciarla en el sitio ("restart", el valor por
+  # defecto), que deja el clúster sin escritura mientras se recrea el pod
+  primaryUpdateMethod: switchover
 
   storage:
     size: 2Gi
@@ -51,6 +56,19 @@ spec:
       # Su clave "username" debe coincidir con "owner".
       secret:
         name: agroeco-db-app
+
+  # Backup con el Barman Cloud Plugin: el operador añade a cada pod un
+  # sidecar del plugin, y la primaria archiva cada WAL en el ObjectStore
+  # (k8s/06-objectstore.yaml). Con WAL continuo se puede restaurar a
+  # cualquier instante posterior a una copia base, no solo al del backup.
+  # Al activarlo por primera vez, la primaria se recrea en el sitio, sin
+  # switchover: sin el sidecar no podría archivar sus WAL pendientes para
+  # degradarse a réplica (docs/TROUBLESHOOTING.md, TS-03).
+  plugins:
+    - name: barman-cloud.cloudnative-pg.io
+      isWALArchiver: true
+      parameters:
+        barmanObjectName: agroeco-backup-store
 
   # El superusuario postgres no tiene contraseña ni acceso por red.
   # Para administrar: kubectl cnpg psql agroeco-pg (entra en el pod).

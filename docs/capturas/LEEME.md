@@ -53,8 +53,8 @@ momento exacto de cada una con el aviso **📸 CAPTURA NN**.
 | 14b | `14b_exp_C_cnpg_status.png` | Experimento C, terminal Ubuntu 1, tras el failover: `kubectl cnpg status agroeco-pg -n agroeco` | Primaria `agroeco-pg-2`, réplica `agroeco-pg-1` en *streaming* y `Cluster in healthy state` | Usuario del prompt |
 | 14c | `14c_exp_C_job_nueva_primaria.png` | Experimento C, terminal Ubuntu 1: Job del ETL relanzado tras el failover | Log con `Conectando a PostgreSQL (agroeco@agroeco-pg-rw…)`, las 6 tablas insertadas y `Complete 1/1` | Usuario del prompt |
 | 15 | `15_gitleaks_fase2.png` | Cierre de la Fase 2, antes del commit: `gitleaks dir . --redact -v` y `gitleaks git --redact -v` | `no leaks found` en el directorio y en el historial | Usuario del prompt |
-| 16a | `16a_backup_completado.png` | _(pendiente, bloque de backup)_ Tras el backup bajo demanda con el Barman Cloud Plugin: `kubectl get backup` y listado del bucket en Garage | Backup `completed` y objetos de la copia base y del WAL en el bucket | Claves de acceso S3 |
-| 16b | `16b_restauracion.png` | _(pendiente, bloque de backup)_ Tras crear `agroeco-pg-restore` desde el backup: `kubectl get cluster` y recuento por tabla | Clúster restaurado `healthy` y los mismos recuentos (28, 17, 13529, 620, 2015, 1395) | Usuario del prompt |
+| 16a | `16a_backup_completado.png` | Fase 2, bloque de backup, terminal Ubuntu 1, tras el backup bajo demanda: `kubectl get backup -n agroeco` y `kubectl logs` del Pod `s3-listado` (listado del bucket en Garage) | Backup `completed` y objetos de la copia base y del WAL en el bucket | Claves de acceso S3 |
+| 16b | `16b_restauracion.png` | Fase 2, bloque de backup, terminal Ubuntu 1, tras crear `agroeco-pg-restore` desde el backup: `kubectl get cluster -n agroeco`, recuento por tabla con `kubectl cnpg psql agroeco-pg-restore` y línea temporal | Clúster restaurado `healthy` y los mismos recuentos (28, 17, 13529, 620, 2015, 1395) | Usuario del prompt |
 
 ### Fase 3 – Helm chart propio
 

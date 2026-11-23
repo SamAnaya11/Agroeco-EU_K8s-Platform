@@ -1,0 +1,17 @@
+# EJEMPLO con valores ficticios: muestra la forma del Secret con la clave de
+# acceso S3 de Garage que usa el ObjectStore del Barman Cloud Plugin.
+# NO se aplica. El Secret real se crea con kubectl a partir de la salida de
+# "garage key create", sin que la clave pase por un archivo ni por Git
+# (comandos en el README, sección de backup).
+#
+# ACCESS_KEY_ID:     identificador de la clave de Garage ("GK" + 24 hex)
+# ACCESS_SECRET_KEY: secreto de la clave (64 hex)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: agroeco-s3-creds
+  namespace: agroeco
+type: Opaque
+stringData:
+  ACCESS_KEY_ID: "GK000000000000000000000000"
+  ACCESS_SECRET_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
