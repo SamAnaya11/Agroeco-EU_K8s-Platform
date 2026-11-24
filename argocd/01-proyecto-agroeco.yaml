@@ -1,0 +1,38 @@
+# Proyecto de ArgoCD del ETL: qué puede desplegar y dónde.
+# Uso: kubectl apply -f argocd/01-proyecto-agroeco.yaml
+#
+# Sustituye al proyecto "default", que admite cualquier repositorio, destino
+# y tipo de objeto. Aquí todo lo que no está en la lista queda prohibido.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: agroeco
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: agroeco-eu
+spec:
+  description: ETL Agroeco-EU (chart charts/agroeco-etl) en el namespace agroeco
+
+  # Origen: solo este repositorio (público, sin credenciales)
+  sourceRepos:
+    - https://github.com/SamAnaya11/Agroeco-EU_K8s-Platform.git
+
+  # Destino: solo el namespace agroeco del propio clúster
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: agroeco
+
+  # Ningún objeto de ámbito de clúster (namespaces, CRD, roles…): la lista
+  # vacía no permite ninguno
+  clusterResourceWhitelist: []
+
+  # Solo los dos objetos que genera el chart con la carga inicial
+  # desactivada. Sin "Job": si se reactivara la carga inicial, ArgoCD la
+  # ejecutaría como PostSync en cada sincronización, y el proyecto lo impide.
+  # Sin "Secret": las credenciales nunca vienen de Git.
+  # Los Jobs que crea el CronJob los crea Kubernetes, no ArgoCD: no les afecta.
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: ConfigMap
+    - group: batch
+      kind: CronJob

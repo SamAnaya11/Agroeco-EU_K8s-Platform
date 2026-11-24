@@ -1,0 +1,47 @@
+# Application de ArgoCD: el ETL de prod, desplegado desde Git.
+# Uso: kubectl apply -f argocd/02-app-agroeco-etl.yaml
+#
+# ArgoCD no ejecuta "helm install": genera los manifiestos con "helm template"
+# (Helm v4) y los aplica. La release de Helm de la Fase 3 deja de usarse.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: agroeco-etl
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: agroeco-eu
+  # Sin el finalizer resources-finalizer.argocd.argoproj.io, a propósito:
+  # borrar la Application deja el ConfigMap y el CronJob en el clúster.
+spec:
+  project: agroeco
+
+  source:
+    repoURL: https://github.com/SamAnaya11/Agroeco-EU_K8s-Platform.git
+    # Rama, no commit fijo: cada commit en main es una nueva versión deseada
+    targetRevision: main
+    path: charts/agroeco-etl
+    helm:
+      # El mismo nombre que la release de Helm de la Fase 3: los objetos
+      # generados se llaman igual y ArgoCD adopta los que ya existen.
+      releaseName: agroeco-etl
+      valueFiles:
+        - values-prod.yaml
+      # Por encima de values-prod.yaml. ArgoCD convierte el hook post-install
+      # en PostSync y lo ejecutaría en CADA sincronización: con selfHeal,
+      # cada corrección de drift relanzaría la descarga y la recarga
+      # completa. Los datos ya están cargados; en un clúster nuevo, la
+      # primera carga se lanza a mano desde el CronJob.
+      valuesObject:
+        cargaInicial:
+          enabled: false
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: agroeco
+
+  syncPolicy:
+    automated:
+      # Lo que desaparece de Git desaparece del clúster
+      prune: true
+      # Un cambio manual en el clúster se revierte al estado de Git
+      selfHeal: true

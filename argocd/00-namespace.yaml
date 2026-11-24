@@ -1,0 +1,16 @@
+# Espacio de nombres de ArgoCD (Fase 4).
+# Uso: kubectl apply -f argocd/00-namespace.yaml   (antes del helm install)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd
+  labels:
+    app.kubernetes.io/part-of: agroeco-eu
+    # Pod Security Standards: nivel "restricted", como el namespace agroeco.
+    # Se instaló primero con enforce "baseline" y warn "restricted": el
+    # helm install del chart 10.19.1 (incluido el Job de inicialización de
+    # Redis) no dio ningún aviso, y "kubectl label --dry-run=server" con
+    # enforce=restricted tampoco. Después se subió a "restricted".
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

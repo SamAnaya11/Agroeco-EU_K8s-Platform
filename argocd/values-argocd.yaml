@@ -1,0 +1,76 @@
+# Valores del chart oficial de ArgoCD (argo/argo-cd 10.19.1, Argo CD v3.6.3).
+#
+# Instalación (namespace creado antes con argocd/00-namespace.yaml):
+#   helm install argocd argo/argo-cd --version 10.19.1 -n argocd \
+#     -f argocd/values-argocd.yaml --wait --timeout 10m
+#
+# Solo se cambia lo necesario respecto a los valores del chart. La imagen no
+# se sustituye: es la appVersion del chart (v3.6.3), así que chart e imagen
+# van en la combinación que publican sus autores. El acceso a la interfaz es
+# por "kubectl port-forward" (sin Ingress: Traefik está desactivado e
+# Ingress NGINX está retirado).
+
+crds:
+  install: true
+  # Un "helm uninstall" de ArgoCD no borra las CRD: si las borrara, se
+  # borrarían con ellas la Application y el AppProject del proyecto.
+  keep: true
+
+configs:
+  cm:
+    # Seguimiento por la anotación argocd.argoproj.io/tracking-id. Es el valor
+    # por defecto de Argo CD (el chart no define la clave); se escribe para
+    # que no dependa de él. No toca la etiqueta
+    # app.kubernetes.io/instance que ya pone el chart del ETL.
+    application.resourceTrackingMethod: annotation
+    # Cada cuánto se consulta Git: 120 s más hasta 60 s aleatorios (máximo
+    # 3 min). Es el valor por defecto. No hay webhook de GitHub porque el
+    # clúster local no es accesible desde Internet.
+    timeout.reconciliation: 120s
+
+# Sin inicio de sesión externo (SSO): solo el usuario admin local
+dex:
+  enabled: false
+
+# Sin avisos por correo ni chat (las alertas son de la Fase 5)
+notifications:
+  enabled: false
+
+# El chart no permite desactivar el controlador de ApplicationSet. Con una
+# sola Application no hace falta: 0 réplicas, sin pod ni memoria ocupada.
+applicationSet:
+  replicas: 0
+
+# Recursos ajustados a la memoria de WSL. Límite de memoria en todos para
+# que ArgoCD nunca pueda quitársela a PostgreSQL; sin límite de CPU.
+controller:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+repoServer:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+server:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+redis:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 128Mi

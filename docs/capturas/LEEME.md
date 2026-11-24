@@ -72,11 +72,11 @@ momento exacto de cada una con el aviso **📸 CAPTURA NN**.
 
 | Nº | Archivo | Paso exacto | Qué debe verse | Tapar |
 |----|---------|-------------|----------------|-------|
-| 20 | `20_github_actions.png` | Ejecución del workflow en GitHub | Todos los pasos en verde | Correo si aparece |
-| 21 | `21_ghcr_paquete.png` | Página del paquete en ghcr.io | Imagen con su etiqueta | Correo si aparece |
-| 22 | `22_argocd_app.png` | Interfaz de ArgoCD por port-forward | Aplicación `Synced` y `Healthy` | Contraseña de admin |
-| 23 | `23_exp_E_drift.png` | Experimento E (1): cambio manual con `kubectl` | ArgoCD detecta `OutOfSync` y lo revierte | — |
-| 24 | `24_exp_E_cambio_git.png` | Experimento E (2): commit en Git | ArgoCD aplica el cambio solo | — |
+| 20 | `20_argocd_adopcion.png` | Fase 4, paso 4.2, navegador: interfaz de ArgoCD por `kubectl port-forward`, vista en árbol de la Application `agroeco-etl`, tras la primera sincronización y la retirada de la release de Helm | `Synced` al commit de `main` (SHA corto visible) y `Healthy`; en el árbol, el ConfigMap `agroeco-etl` y el CronJob `agroeco-etl-mensual` (con, debajo, solo los Jobs que él mismo creó), sin Job de carga inicial | Contraseña de admin si aparece; correo si aparece |
+| 21 | `21_exp_E_drift.png` | Experimento E (1), paso 4.3, terminal Ubuntu 1: vigilancia del CronJob con hora mientras en Ubuntu 2 se cambia `suspend` a `true` con `kubectl patch` | `SUSPEND` pasa de `False` a `True` (cambio manual) y vuelve a `False` (ArgoCD), con las horas de cada cambio; debajo, la última operación de la Application: sincronización automática por `selfHeal` y su hora | Usuario del prompt |
+| 22 | `22_github_actions.png` | Fase 4, paso 4.4, navegador: página de la ejecución del workflow en la pestaña *Actions* | Los dos jobs (validación del chart e imagen) en verde y el resumen de la ejecución con la imagen, las etiquetas `0.2.0` y `sha-<commit>` y el digest `sha256:…` | Correo si aparece |
+| 23 | `23_ghcr_paquete.png` | Fase 4, paso 4.4, navegador: página del paquete `agroeco-etl` en ghcr.io, después de hacerlo público | Visibilidad `Public`, versión con las etiquetas `0.2.0` y `sha-<commit>`, y el repositorio enlazado | Correo si aparece |
+| 24 | `24_exp_E_promocion.png` | Experimento E (2), paso 4.5, terminal Ubuntu 1: tras el commit de promoción y la sincronización de ArgoCD | `git log -1 --oneline` del commit de promoción; la revisión sincronizada por ArgoCD, con el mismo SHA, en `Synced`/`Healthy`; la imagen del CronJob `ghcr.io/samanaya11/agroeco-etl:0.2.0@sha256:…` | Usuario del prompt |
 
 ### Fase 5 – Observabilidad _(opcional)_
 
