@@ -1,0 +1,36 @@
+# Entorno prod (namespace agroeco, junto al clúster PostgreSQL agroeco-pg).
+#
+# Las claves que definen el entorno se repiten a propósito aunque coincidan
+# con values.yaml: este archivo documenta prod por sí solo, y un cambio en los
+# valores por defecto no puede alterar prod sin aparecer aquí.
+#
+# Uso:
+#   helm install agroeco-etl charts/agroeco-etl -n agroeco \
+#     -f charts/agroeco-etl/values-prod.yaml --timeout 10m
+
+etl:
+  nivelLog: INFO
+
+postgres:
+  enabled: true
+  host: agroeco-pg-rw
+  credentialsSecret: agroeco-db-app
+  tls:
+    sslmode: verify-full
+    caSecret: agroeco-pg-ca
+
+cronjob:
+  schedule: "0 6 1 * *"
+  suspend: false
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+
+cargaInicial:
+  ttlSecondsAfterFinished: 86400
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    memory: 1Gi

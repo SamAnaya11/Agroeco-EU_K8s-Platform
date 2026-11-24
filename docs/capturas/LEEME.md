@@ -60,9 +60,13 @@ momento exacto de cada una con el aviso **📸 CAPTURA NN**.
 
 | Nº | Archivo | Paso exacto | Qué debe verse | Tapar |
 |----|---------|-------------|----------------|-------|
-| 17 | `17_helm_lint_template.png` | `helm lint` y extracto de `helm template` | `0 chart(s) failed` y el CronJob generado | — |
-| 18 | `18_helm_install_upgrade.png` | `helm history` tras instalar y actualizar | Revisiones 1 y 2 | — |
-| 19 | `19_exp_D_entornos.png` | Experimento D: `helm diff` / `diff` de dev y prod | Diferencias de horario y recursos | — |
+| 17a | `17a_helm_lint.png` | Fase 3, terminal Ubuntu 1: `helm lint --strict` con los valores por defecto, dev y prod, y `helm template … -f values-prod.yaml --show-only templates/cronjob.yaml` (primera parte) | `1 chart(s) linted, 0 chart(s) failed` en los tres; comienzo del CronJob generado: nombre `agroeco-etl-mensual`, `schedule`, `jobTemplate` y `automountServiceAccountToken: false` hasta el `securityContext` del pod | Usuario del prompt |
+| 17b | `17b_helm_template_cronjob.png` | Fase 3, terminal Ubuntu 1, a continuación: resto de la misma salida de `helm template` | Contenedor, credenciales desde `agroeco-db-app`, recursos, seguridad del contenedor y volumen `pg-ca` del Secret `agroeco-pg-ca` con solo `ca.crt`, montado en `/etc/agroeco/pg-ca` en solo lectura | Usuario del prompt |
+| 18 | `18_helm_install_upgrade.png` | Fase 3, terminal Ubuntu 1, tras el `helm upgrade` a `verify-full` y la ejecución manual: `helm history agroeco-etl -n agroeco` | Revisión 1 (instalación con `require`) `superseded` y revisión 2 (`verify-full`) `deployed` | Usuario del prompt |
+| 18b | `18b_verify_full_negativa.png` | Fase 3, terminal Ubuntu 1, paso 5.5: `kubectl logs -n agroeco prueba-verify-full` | Caso A (`verify-full`, `agroeco-pg-rw`) y C (`require`, IP del Service) con `fe_sendauth: no password supplied`; caso B (`verify-full`, IP) rechazado con `server certificate … does not match host name` | Usuario del prompt |
+| 19a1 | `19a1_exp_D_diff_configmap.png` | Experimento D (1), terminal Ubuntu 1: `diff -u` entre `helm template` (ConfigMap y CronJob) con `values-dev.yaml` (`-`) y con `values-prod.yaml` (`+`), primera parte | Los comandos; en el ConfigMap, `ETL_NIVEL_LOG` DEBUG/INFO, `ETL_CARGAR_BD` false/true y las variables `PG*` y `PGSSLROOTCERT` solo en prod; cabecera del CronJob: `schedule`, `suspend` e historial hasta `jobTemplate` | Usuario del prompt |
+| 19a2 | `19a2_exp_D_diff_cronjob.png` | Experimento D (1), terminal Ubuntu 1, a continuación: resto de la misma salida | Pod del CronJob: credenciales solo en prod, requests 100m/256Mi frente a 250m/512Mi, montaje y volumen `pg-ca` solo en prod; `código diff: 1` y TTL del Job de carga inicial (3600 frente a 86400) | Usuario del prompt |
+| 19b | `19b_exp_D_release_dev.png` | Experimento D (2), terminal Ubuntu 1: release dev en `agroeco-dev` con `helm list -A`, `kubectl get job,cronjob -n agroeco-dev` y final del log | Dos releases del mismo chart (`agroeco` y `agroeco-dev`); Job de dev `Complete` con `Carga en PostgreSQL omitida`; CronJob de dev suspendido | Usuario del prompt |
 
 ### Fase 4 – GitOps y CI/CD
 

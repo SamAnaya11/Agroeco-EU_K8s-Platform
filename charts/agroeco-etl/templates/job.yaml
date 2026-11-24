@@ -1,0 +1,21 @@
+{{- if .Values.cargaInicial.enabled }}
+# Carga inicial: se ejecuta una vez al instalar la release.
+#
+# Es un hook de Helm y no un objeto normal porque el spec.template de un Job no
+# se puede modificar: un Job normal haría fallar "helm upgrade" en cuanto
+# cambiara la plantilla. post-install = después de crear el ConfigMap.
+# before-hook-creation = en una reinstalación, se borra el anterior primero.
+# Helm no borra los hooks al desinstalar: lo hace el TTL.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "agroeco-etl.fullname" . }}-carga-inicial
+  labels:
+    {{- include "agroeco-etl.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  ttlSecondsAfterFinished: {{ .Values.cargaInicial.ttlSecondsAfterFinished }}
+  {{- include "agroeco-etl.jobSpec" . | nindent 2 }}
+{{- end }}

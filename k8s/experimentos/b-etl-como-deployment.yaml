@@ -47,7 +47,9 @@ spec:
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef:
-                name: agroeco-etl-config
+                # ConfigMap del chart (Fase 3): requiere la release agroeco-etl
+                # instalada en agroeco. En la Fase 1 era agroeco-etl-config.
+                name: agroeco-etl
           env:
             - name: PGUSER
               valueFrom:

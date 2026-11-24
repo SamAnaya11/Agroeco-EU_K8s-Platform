@@ -1,0 +1,34 @@
+# Entorno dev (namespace agroeco-dev): solo lo que cambia respecto a values.yaml.
+#
+# Sin base de datos: ejecuta extracción y limpieza para probar la imagen y la
+# descarga de Eurostat sin tocar los datos de prod ni necesitar un segundo
+# PostgreSQL (ahorra memoria en WSL). Tampoco hace falta ningún Secret.
+#
+# Uso:
+#   helm install agroeco-etl charts/agroeco-etl -n agroeco-dev \
+#     -f charts/agroeco-etl/values-dev.yaml --timeout 10m
+
+etl:
+  nivelLog: DEBUG
+
+postgres:
+  enabled: false
+
+cronjob:
+  # Semanal (lunes 07:00 UTC) pero suspendido: en dev solo se ejecuta a mano
+  schedule: "0 7 * * 1"
+  suspend: true
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+
+cargaInicial:
+  ttlSecondsAfterFinished: 3600
+
+resources:
+  # Reserva menos en el nodo; el límite de memoria se mantiene en 1Gi porque
+  # pandas procesa los mismos datos que en prod
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi

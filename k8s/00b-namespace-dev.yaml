@@ -1,0 +1,14 @@
+# Espacio de nombres del entorno dev del ETL (Fase 3, Experimento D).
+#
+# Fuera del chart a propósito: un "helm uninstall" no debe borrar el
+# namespace, y "helm install --create-namespace" lo crearía sin las etiquetas
+# de Pod Security. Mismo nivel "restricted" que agroeco: dev no relaja la
+# seguridad. Sin PostgreSQL ni Secrets: en dev el ETL no carga en base de datos.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agroeco-dev
+  labels:
+    app.kubernetes.io/part-of: agroeco-eu
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted

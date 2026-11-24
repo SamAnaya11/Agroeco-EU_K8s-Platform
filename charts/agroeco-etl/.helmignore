@@ -1,0 +1,11 @@
+# Archivos que no entran en el paquete del chart (helm package)
+.DS_Store
+.git/
+.gitignore
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+.vscode/
+.idea/

@@ -1,0 +1,82 @@
+# Valores por defecto del chart agroeco-etl.
+# Los entornos solo cambian lo necesario: values-dev.yaml y values-prod.yaml.
+# Validación de tipos y valores permitidos: values.schema.json.
+#
+# La seguridad del pod (usuario 10001, sin root, raíz de solo lectura, sin
+# capacidades) NO es configurable: está fija en templates/_helpers.tpl para
+# que ningún entorno pueda relajarla.
+
+image:
+  # Imagen construida en la Fase 1 e importada en k3d (k3d image import)
+  repository: agroeco-etl
+  # Vacío = appVersion de Chart.yaml (versión fijada, nunca "latest")
+  tag: ""
+  # IfNotPresent: la imagen importada en k3d no se descarga de ningún registro
+  pullPolicy: IfNotPresent
+
+etl:
+  # DEBUG | INFO | WARNING | ERROR
+  nivelLog: INFO
+
+postgres:
+  # true = extracción, limpieza y carga (ETL_CARGAR_BD=true).
+  # false = solo extracción y limpieza; no hace falta base de datos ni Secret.
+  enabled: true
+  # Service de CloudNativePG que apunta siempre a la primaria
+  host: agroeco-pg-rw
+  port: 5432
+  database: agroeco
+  # Secret creado con kubectl (claves username y password); el chart solo
+  # conoce su nombre, nunca su contenido
+  credentialsSecret: agroeco-db-app
+  tls:
+    # require: cifra pero no comprueba la identidad del servidor.
+    # verify-full: además comprueba que el certificado lo firma la CA del
+    # clúster y que su nombre coincide con "host" (agroeco-pg-rw está en el SAN).
+    sslmode: verify-full
+    # Secret que genera CloudNativePG con la CA del servidor. Solo se monta
+    # su clave ca.crt; ca.key no entra en el pod.
+    caSecret: agroeco-pg-ca
+
+cronjob:
+  # Formato cron de 5 campos. Día 1 de cada mes a las 06:00, como el timer
+  # trigger del proyecto original
+  schedule: "0 6 1 * *"
+  timeZone: Etc/UTC
+  # true = no se dispara nunca solo; solo ejecuciones manuales desde él
+  suspend: false
+  # Nunca dos ejecuciones a la vez
+  concurrencyPolicy: Forbid
+  # Si el clúster estaba apagado a la hora prevista, arranca hasta 1 h tarde
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+
+cargaInicial:
+  # Job que se ejecuta una vez al instalar el chart (hook post-install).
+  # Las ejecuciones posteriores se lanzan desde el CronJob:
+  #   kubectl create job --from=cronjob/<release>-mensual <nombre>
+  enabled: true
+  # Helm no borra los hooks al desinstalar: el Job se elimina solo con este TTL
+  ttlSecondsAfterFinished: 86400
+
+# Comunes al Job de carga inicial y a los Jobs del CronJob
+ejecucion:
+  # Hasta 2 reintentos si el pod falla (cada uno, un pod nuevo)
+  backoffLimit: 2
+  # Nunca más de 30 minutos en total
+  activeDeadlineSeconds: 1800
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    # Sin límite de CPU: un límite ralentizaría pandas sin ahorrar nada
+    memory: 1Gi
+
+# Tamaño máximo de los volúmenes temporales (emptyDir) del pod
+volumenes:
+  # raw/ y processed/ de cada ejecución
+  datos: 500Mi
+  tmp: 100Mi

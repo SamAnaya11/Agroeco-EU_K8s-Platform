@@ -1,0 +1,18 @@
+Release {{ .Release.Name }} (chart {{ .Chart.Name }}-{{ .Chart.Version }}, ETL {{ .Chart.AppVersion }}) en el namespace {{ .Release.Namespace }}.
+
+Imagen:   {{ include "agroeco-etl.image" . }}
+CronJob:  {{ include "agroeco-etl.fullname" . }}-mensual  ("{{ .Values.cronjob.schedule }}" {{ .Values.cronjob.timeZone }}{{ if .Values.cronjob.suspend }}, SUSPENDIDO{{ end }})
+{{- if .Values.postgres.enabled }}
+Carga:    PostgreSQL {{ .Values.postgres.host }}:{{ .Values.postgres.port }}/{{ .Values.postgres.database }}, sslmode={{ .Values.postgres.tls.sslmode }}{{ if include "agroeco-etl.verificaCA" . }} (CA del Secret {{ .Values.postgres.tls.caSecret }}){{ end }}
+{{- else }}
+Carga:    omitida (postgres.enabled=false): solo extracción y limpieza
+{{- end }}
+
+{{- if .Values.cargaInicial.enabled }}
+
+Carga inicial:
+  kubectl -n {{ .Release.Namespace }} logs job/{{ include "agroeco-etl.fullname" . }}-carga-inicial
+{{- end }}
+
+Ejecución manual (misma plantilla que el CronJob):
+  kubectl -n {{ .Release.Namespace }} create job --from=cronjob/{{ include "agroeco-etl.fullname" . }}-mensual {{ include "agroeco-etl.fullname" . }}-manual-$(date +%Y%m%d%H%M)

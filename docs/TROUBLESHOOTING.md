@@ -13,6 +13,7 @@ solución aplicada y cómo evitar que se repita.
 | [TS-03](#ts-03--no-hay-switchover-al-activar-el-barman-cloud-plugin-pese-a-primaryupdatemethod-switchover) | 2 | No hay switchover al activar el Barman Cloud Plugin, pese a `primaryUpdateMethod: switchover` |
 | [TS-04](#ts-04--kubectl-apply-responde-configured-sin-haber-cambios) | 2 | `kubectl apply` responde `configured` sin haber cambios |
 | [TS-05](#ts-05--falta-00000002history-en-el-archivo-de-wal) | 2 | Falta `00000002.history` en el archivo de WAL |
+| [TS-06](#ts-06--el-nivel-debug-de-dev-no-muestra-nada-más-que-prod) | 3 | El nivel DEBUG de dev no muestra nada más que prod |
 
 ---
 
@@ -262,6 +263,50 @@ solución aplicada y cómo evitar que se repita.
   archivo a mano para no meter en el archivo un objeto que no ha pasado por
   el archivador. La lección: el archivado se activa desde el primer día, y
   la ventana de recuperación empieza en el primer backup.»
+
+---
+
+## TS-06 · El nivel DEBUG de dev no muestra nada más que prod
+
+- **Fase:** 3 – Helm chart propio (Experimento D).
+- **Síntoma:** la release de dev usa `ETL_NIVEL_LOG=DEBUG` y la de prod
+  `INFO`. Aun así, el log de la carga inicial de dev no tenía ninguna línea
+  `DEBUG`: sus 35 líneas eran todas `INFO`, como en prod.
+- **Causa:** el ETL sí lee la variable: `configurar_logs()` en
+  `etl/main.py` la pasa a `logging.basicConfig(level=…)`. Pero ningún módulo
+  de `etl/src/` llama a `log.debug`, y las bibliotecas que usa no escriben
+  nada en ese nivel: `urllib.request` no usa `logging`, pandas no registra
+  nada y en dev psycopg no llega a conectarse. El nivel se aplica, pero no
+  hay mensajes DEBUG que mostrar.
+- **Cómo se comprobó:**
+  1. `kubectl logs … | awk '{print $2}' | sort | uniq -c` sobre el log de
+     dev: `35 INFO` y ninguna otra fila.
+  2. En el código, ninguna llamada `log.debug` en `etl/main.py` ni en
+     `etl/src/`.
+  3. Con la misma imagen y `docker run --read-only`, llamando a
+     `configurar_logs()` del ETL y emitiendo una línea DEBUG de prueba. Con
+     `ETL_NIVEL_LOG=DEBUG` aparece la línea
+     `… DEBUG   línea DEBUG visible` y el nivel efectivo es `DEBUG`. Con
+     `INFO` la línea no aparece. La variable funciona.
+- **Solución:** en la Fase 3, ninguna en el código. El README indica que el
+  nivel de log está configurado por entorno pero hoy no tiene efecto
+  visible, y en «Tareas pendientes» se añaden mensajes DEBUG al ETL para la
+  Fase 4: URL y tamaño de cada descarga, y filas antes y después de cada
+  limpieza. Llegarán con la imagen que construya GitHub Actions y una nueva
+  `appVersion` del chart, en lugar de con un `docker build` manual.
+- **Prevención:** una diferencia entre entornos se comprueba por su efecto,
+  no solo por su presencia en el diff. Antes de presentar un valor como
+  diferencia útil, se comprueba en la salida real que cambia algo; si no
+  cambia nada, se documenta como tal.
+- **Frase para entrevista:** «En el experimento de entornos, dev tenía el log
+  en DEBUG y prod en INFO, pero los dos logs eran idénticos. Comprobé
+  primero que la variable llegaba y se aplicaba: con la misma imagen en
+  Docker, una línea DEBUG de prueba aparecía o no según el nivel. El
+  problema no estaba en el despliegue: el código no emitía ningún mensaje
+  DEBUG. Lo documenté como diferencia sin efecto y lo dejé para la siguiente
+  imagen, en lugar de presentarlo como una ventaja de dev. La lección: una
+  diferencia de configuración solo cuenta si cambia el comportamiento
+  observable.»
 
 ---
 

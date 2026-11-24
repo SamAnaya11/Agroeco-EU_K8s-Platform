@@ -1,0 +1,84 @@
+# Prueba negativa de PGSSLMODE=verify-full (Fase 3).
+#
+# Que el ETL se conecte con verify-full no demuestra por sí solo que la
+# verificación se haga: hay que ver que un servidor con un nombre que no está
+# en su certificado se RECHAZA. Este Pod hace tres intentos con psql:
+#
+#   A  verify-full + CA, host agroeco-pg-rw (en el SAN)   → TLS aceptado
+#   B  verify-full + CA, host = IP del Service (no en SAN) → TLS RECHAZADO
+#   C  require sin CA,   host = la misma IP                → TLS aceptado
+#
+# Sin credenciales: la verificación TLS ocurre antes de la autenticación, así
+# que "fe_sendauth: no password supplied" significa "certificado aceptado" y
+# no se lee ni se escribe ningún dato. No toca la release agroeco-etl.
+#
+# En C no se pasa sslrootcert: con una CA configurada, libpq trata "require"
+# como "verify-ca" y C dejaría de ser un require puro.
+#
+# Está en k8s/experimentos/ para que "kubectl apply -f k8s/" no lo aplique.
+# Uso:    kubectl apply  -f k8s/experimentos/verify-full-negativa.yaml
+#         kubectl logs -n agroeco prueba-verify-full
+# Borrar: kubectl delete -f k8s/experimentos/verify-full-negativa.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: prueba-verify-full
+  namespace: agroeco
+  labels:
+    app.kubernetes.io/name: prueba-verify-full
+    app.kubernetes.io/part-of: agroeco-eu
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    # Usuario "postgres" de las imágenes de CloudNativePG
+    runAsUser: 26
+    runAsGroup: 26
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: psql
+      # La misma imagen que el clúster: ya está en los nodos y trae psql 18
+      image: ghcr.io/cloudnative-pg/postgresql:18.7-minimal-trixie
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          IP=$(getent hosts agroeco-pg-rw | awk '{print $1}')
+          echo "IP del Service agroeco-pg-rw: $IP"
+          prueba() {
+            echo "=== $1"
+            # -w: no pide contraseña; si el TLS se supera, falla en la autenticación
+            psql -w "$2 user=agroeco dbname=agroeco connect_timeout=5" -c 'select 1' 2>&1
+            echo "código de salida de psql: $?"
+          }
+          prueba "A  verify-full, host agroeco-pg-rw (en el SAN)" \
+            "host=agroeco-pg-rw sslmode=verify-full sslrootcert=/etc/pg-ca/ca.crt"
+          prueba "B  verify-full, host $IP (no está en el SAN)" \
+            "host=$IP sslmode=verify-full sslrootcert=/etc/pg-ca/ca.crt"
+          prueba "C  require sin CA, host $IP" \
+            "host=$IP sslmode=require"
+          exit 0
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      volumeMounts:
+        - name: pg-ca
+          mountPath: /etc/pg-ca
+          readOnly: true
+      resources:
+        requests:
+          cpu: 50m
+          memory: 32Mi
+        limits:
+          memory: 128Mi
+  volumes:
+    # Solo el certificado público de la CA; ca.key no se monta
+    - name: pg-ca
+      secret:
+        secretName: agroeco-pg-ca
+        items:
+          - key: ca.crt
+            path: ca.crt

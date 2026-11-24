@@ -5,7 +5,7 @@ Migración del pipeline ETL de agricultura ecológica de la UE
 serverless en Azure) a una plataforma Kubernetes con PostgreSQL gestionado
 por operador, empaquetado con Helm, despliegue GitOps y CI/CD.
 
-> Estado: en construcción (Fase 2 completada, con backup y restauración probados; siguiente: Fase 3 – chart de Helm).
+> Estado: en construcción (Fase 3 completada: chart de Helm propio, TLS `verify-full` y Experimento D; siguiente: Fase 4 – GitOps y CI/CD).
 
 ## Qué hace
 
@@ -32,7 +32,7 @@ flowchart LR
         argo[ArgoCD] -->|pull| repo
         argo -->|sincroniza| chart
         subgraph ns["namespace agroeco"]
-            chart[CronJob ETL] -->|SQL| pg1[(PostgreSQL<br/>primaria)]
+            chart[CronJob ETL<br/>chart Helm] -->|SQL · TLS verify-full| pg1[(PostgreSQL<br/>primaria)]
             pg1 -.replicación.-> pg2[(PostgreSQL<br/>réplica)]
         end
         cnpg[Operador CloudNativePG] --> pg1
@@ -59,6 +59,7 @@ _(Se completará con las versiones exactas verificadas en cada fase.)_
 | Kubernetes local | k3d / k3s | 5.9.0 / v1.37.2+k3s1 |
 | Cliente Kubernetes | kubectl | v1.37.2 |
 | Paquetes | Helm | v4.3.2 |
+| Despliegue del ETL | Chart propio [`charts/agroeco-etl`](charts/agroeco-etl) | 0.1.0 (ETL 0.1.0) |
 | Operador de base de datos | CloudNativePG (chart `cloudnative-pg`) | 1.30.2 (chart 0.29.2) |
 | Base de datos | PostgreSQL (`ghcr.io/cloudnative-pg/postgresql:18.7-minimal-trixie`) | 18.7 |
 | CLI de base de datos | Plugin `kubectl cnpg` | 1.30.2 |
@@ -140,6 +141,30 @@ _(Se completará con las versiones exactas verificadas en cada fase.)_
   al activar por primera vez el archivado de WAL con el plugin, la primaria
   se recrea en el sitio, porque sin el sidecar no podría completar el
   switchover ([TS-03](docs/TROUBLESHOOTING.md#ts-03--no-hay-switchover-al-activar-el-barman-cloud-plugin-pese-a-primaryupdatemethod-switchover)).
+- **Chart de Helm solo para el ETL** ([`charts/agroeco-etl`](charts/agroeco-etl)).
+  El chart contiene el ConfigMap, el CronJob y el Job de carga inicial. El
+  Cluster de CloudNativePG, el ObjectStore, Garage, los namespaces y los
+  Secrets quedan fuera, porque tienen otro ciclo de vida: un
+  `helm uninstall` del ETL nunca puede borrar la base de datos, su backup ni
+  sus credenciales. El chart solo recibe los nombres de los Secrets.
+- **Una sola plantilla para el Job y el CronJob.** El pod (seguridad,
+  recursos, variables y volúmenes) se define una vez en
+  `templates/_helpers.tpl` y lo incluyen los dos objetos. La seguridad del
+  pod no es configurable por valores: ningún entorno puede relajarla. El
+  esquema `values.schema.json` rechaza valores mal escritos, una etiqueta
+  `latest` y los modos TLS que no cifran o no lo exigen.
+- **Carga inicial como hook `post-install`.** El `spec.template` de un Job no
+  se puede modificar, así que un Job normal haría fallar `helm upgrade` en
+  cuanto cambiara la plantilla. Como hook, se ejecuta una vez al instalar y
+  Helm espera a que termine. Las ejecuciones posteriores se lanzan desde el
+  CronJob (`kubectl create job --from=cronjob/…`), con la misma plantilla.
+  Helm no borra los hooks al desinstalar: lo hace su TTL.
+- **TLS con `verify-full` hacia PostgreSQL.** El pod monta solo la clave
+  `ca.crt` del Secret `agroeco-pg-ca` que genera CloudNativePG, nunca
+  `ca.key`, como carpeta y sin `subPath`, para que la renovación de la CA
+  llegue al pod. `PGSSLROOTCERT` apunta a ella. Con `require` solo se monta la
+  CA si se pide verificación: en libpq, una CA configurada convierte
+  `require` en `verify-ca`.
 - **Raw y processed en un volumen `emptyDir`.** Sustituyen a Blob Storage con
   la misma estructura por fecha. El destino persistente de los datos es
   PostgreSQL.
@@ -177,7 +202,8 @@ del Service `agroeco-pg-rw`.
   de `fact_superficie` con `pg_is_in_recovery() = true`. Los datos se replican
   y la réplica es de solo lectura.
 - **Conexión cifrada:** con `PGSSLMODE=require` y `log_connections=on`, el log
-  de la primaria registra la conexión del ETL:
+  de la primaria registra la conexión del ETL (en la Fase 3 pasa a
+  `verify-full`; ver [Despliegue con Helm](#despliegue-con-helm)):
 
   ```
   connection authorized: user=agroeco database=agroeco application_name=agroeco-etl
@@ -202,7 +228,7 @@ Capturas: `13a_consulta_datos.png` (recuentos, vista y réplica) y
 | A | Autocuración de pods | ✅ El Job sustituye al pod borrado sin intervención y termina `Complete` |
 | B | Job/CronJob frente a Deployment | ✅ Como Deployment, el ETL termina bien (código 0) y aun así se reinicia en bucle (`CrashLoopBackOff`) |
 | C | Failover de PostgreSQL | ✅ La réplica pasa a primaria 5,7 s después de borrar la primaria; el cliente vuelve a leer los mismos datos sin cambiar su configuración |
-| D | Mismo chart, distintos entornos | _pendiente_ |
+| D | Mismo chart, distintos entornos | ✅ Un solo chart y una sola imagen generan dos entornos: prod carga en PostgreSQL con `verify-full` cada mes; dev solo extrae y limpia, con el CronJob suspendido y menos memoria reservada, sin base de datos ni Secrets |
 | E | GitOps: corrección de drift y despliegue desde Git | _pendiente_ |
 | F | Alerta ante fallo del Job | _pendiente_ |
 | G | Limpieza completa | _pendiente_ |
@@ -415,6 +441,68 @@ Capturas: `14a_exp_C_log_cliente.png` (log del cliente: corte y cambio de IP),
 `14b_exp_C_cnpg_status.png` (estado tras el failover) y
 `14c_exp_C_job_nueva_primaria.png` (Job relanzado contra la nueva primaria).
 
+### D · Mismo chart, distintos entornos
+
+**Procedimiento.** El chart `charts/agroeco-etl` se despliega con dos
+archivos de valores:
+- `values-prod.yaml`: la release del namespace `agroeco`, revisión 2 (ver
+  [Despliegue con Helm](#despliegue-con-helm)).
+- `values-dev.yaml`: una segunda release con el mismo nombre en el namespace
+  `agroeco-dev` ([`k8s/00b-namespace-dev.yaml`](k8s/00b-namespace-dev.yaml)),
+  con las mismas etiquetas de Pod Security `restricted`. En Helm el nombre de
+  una release es único por namespace, así que las dos conviven.
+
+Para no duplicar PostgreSQL en la memoria de WSL, dev no tiene base de datos:
+el ETL solo extrae y limpia. Las dos ejecuciones nunca coinciden en el
+tiempo. Al terminar, la release de dev se desinstala y se borra su namespace.
+
+**1. Diferencias en los objetos generados**
+(`diff -u` entre `helm template` con cada archivo de valores):
+
+| Objeto | dev | prod |
+|--------|-----|------|
+| ConfigMap | `ETL_CARGAR_BD=false`, `ETL_NIVEL_LOG=DEBUG`; 3 claves, ninguna de PostgreSQL | `ETL_CARGAR_BD=true`, `ETL_NIVEL_LOG=INFO`; 8 claves, con `PGHOST`, `PGSSLMODE=verify-full` y `PGSSLROOTCERT` |
+| CronJob | `0 7 * * 1`, `suspend: true`, historial 1/1 | `0 6 1 * *`, `suspend: false`, historial 3/3 |
+| Pod | Sin credenciales ni CA; requests `100m` / `256Mi` | `PGUSER`/`PGPASSWORD` desde `agroeco-db-app`, CA `pg-ca` montada; requests `250m` / `512Mi` |
+| Job de carga inicial | TTL 3 600 s | TTL 86 400 s |
+
+No cambian los nombres, las etiquetas, la imagen `agroeco-etl:0.1.0`, la
+seguridad del pod y del contenedor, los `emptyDir` ni el límite de memoria
+de 1 Gi. El límite se mantiene a propósito: pandas procesa los mismos datos
+en los dos entornos.
+
+**2. Release de dev en el clúster.**
+- `helm list -A`: `agroeco-etl` en `agroeco` (revisión 2) y en `agroeco-dev`
+  (revisión 1), las dos `deployed` con `agroeco-etl-0.1.0`.
+- Carga inicial de dev `Complete` en 11 s; el pod pasó a `Completed` en 8 s,
+  frente a 15 s en prod, que además carga las 6 tablas. El log termina con
+  `>>> 3. Carga en PostgreSQL omitida (ETL_CARGAR_BD=false)` y
+  `Pipeline terminado correctamente`, sin ninguna conexión a PostgreSQL.
+- CronJob de dev con `SUSPEND True`: solo se ejecuta a mano.
+
+**3. Limpieza.** Después de `helm uninstall` en `agroeco-dev` quedaban solo
+el Job `agroeco-etl-carga-inicial` (`Complete 1/1`) y el ConfigMap
+`kube-root-ca.crt`, que Kubernetes crea en cada namespace. Se confirma así
+que Helm no borra los hooks al desinstalar. El Job desapareció al borrar el
+namespace, sin esperar a su TTL. La release de prod (revisión 2) y
+`agroeco-pg` siguieron intactos.
+
+**Nivel de log.** El nivel está configurado por entorno, pero **hoy no tiene
+efecto visible**. El ETL lee `ETL_NIVEL_LOG` y lo aplica, pero su código no
+emite mensajes DEBUG: el log de dev tiene 35 líneas, todas `INFO`
+([TS-06](docs/TROUBLESHOOTING.md#ts-06--el-nivel-debug-de-dev-no-muestra-nada-más-que-prod)).
+Los mensajes DEBUG llegarán en la Fase 4, con la imagen que construya
+GitHub Actions.
+
+**Conclusión.** Las diferencias entre entornos están solo en dos archivos de
+valores revisables en Git, y el resto del despliegue es idéntico por
+construcción. Promover un cambio de dev a prod es aplicar el mismo chart con
+otro archivo, no mantener dos copias de los manifiestos.
+
+Capturas: `19a1_exp_D_diff_configmap.png` y `19a2_exp_D_diff_cronjob.png`
+(diff entre los entornos) y `19b_exp_D_release_dev.png` (las dos releases y
+la ejecución de dev).
+
 ## Backup y restauración
 
 Sin un backup externo, la alta disponibilidad no protege frente a borrados
@@ -482,13 +570,77 @@ CLI de Garage da el número de objetos pero no su lista.
 Capturas: `16a_backup_completado.png` (backup `completed` y listado del
 bucket) y `16b_restauracion.png` (clúster restaurado y recuentos).
 
+## Despliegue con Helm
+
+El ETL se despliega con el chart [`charts/agroeco-etl`](charts/agroeco-etl),
+que sustituye a los manifiestos `k8s/01-configmap.yaml`, `02-job.yaml` y
+`03-cronjob.yaml` de las fases 1 y 2. Esos manifiestos se retiran del
+repositorio y siguen en el historial de Git.
+
+**Validación sin tocar el clúster.**
+- `helm lint --strict` con los valores por defecto, con `values-dev.yaml` y con
+  `values-prod.yaml`: `0 chart(s) failed` en los tres.
+- `helm template … | kubectl apply --dry-run=server`: el servidor acepta los
+  tres objetos de dev y de prod y no da ningún aviso de Pod Security
+  `restricted`.
+
+**Migración desde los manifiestos.** Helm no instala sobre objetos que ya
+existen y no pertenecen a ninguna release, así que antes se borraron el
+CronJob y el ConfigMap antiguos. El Job `etl-prueba-cron` del Experimento B se
+borró en cascada con el CronJob: su `ownerReference` apunta a él con
+`controller=true`. `blockOwnerDeletion` está vacío porque
+`kubectl create job --from` no lo activa, y solo cuenta en el borrado en
+primer plano. PostgreSQL no se tocó.
+
+**Revisiones.**
+
+| Rev. | Cambio | Resultado |
+|------|--------|-----------|
+| 1 | `helm install` con `values-prod.yaml` y `--set postgres.tls.sslmode=require`: reproduce exactamente el comportamiento de los manifiestos | `deployed`. Carga inicial (hook) `Complete` en 17 s, con las 6 tablas (28, 17, 13 529, 620, 2 015, 1 395). ConfigMap con las mismas 7 claves que el antiguo; sin CA montada |
+| 2 | `helm upgrade` solo con `values-prod.yaml`: `verify-full` | `deployed` (la 1 queda `superseded`). ConfigMap con 8 claves: `PGSSLMODE=verify-full` y `PGSSLROOTCERT=/etc/agroeco/pg-ca/ca.crt`. El CronJob monta `pg-ca` con solo `ca.crt` |
+
+Sin `--reuse-values`, `helm upgrade` recalcula los valores desde el chart y
+los archivos indicados, así que el `--set` de la revisión 1 no pasa a la 2,
+que queda descrita entera por los archivos de Git.
+
+**Verificación de `verify-full`.**
+- **Caso positivo.** Ejecución manual desde el CronJob
+  (`agroeco-etl-manual-tls`): `Complete` en 12 s, con las 6 tablas cargadas.
+  El log de la primaria `agroeco-pg-2` registra a las 17:02:08 UTC
+  `connection authorized: user=agroeco database=agroeco application_name=agroeco-etl SSL enabled (protocol=TLSv1.3, cipher=TLS_AES_256_GCM_SHA384, bits=256)`.
+  Desde el servidor no se distingue `require` de `verify-full`; la prueba está
+  en que el cliente se conectó con la verificación activada.
+- **Prueba negativa**
+  ([`k8s/experimentos/verify-full-negativa.yaml`](k8s/experimentos/verify-full-negativa.yaml)).
+  Un Pod de un solo uso con `psql` y sin credenciales: la verificación TLS va
+  antes de la autenticación, así que `fe_sendauth: no password supplied`
+  significa «certificado aceptado» y no se lee ningún dato. La IP del Service
+  `agroeco-pg-rw` (10.43.119.74) apunta al mismo servidor, pero no está en el
+  SAN de su certificado.
+
+| Caso | Host | Modo | Resultado |
+|------|------|------|-----------|
+| A | `agroeco-pg-rw` | `verify-full` + CA | `fe_sendauth: no password supplied`: certificado aceptado |
+| B | `10.43.119.74` | `verify-full` + CA | **Rechazado**: `server certificate for "agroeco-pg-rw" (and 12 other names) does not match host name "10.43.119.74"` |
+| C | `10.43.119.74` | `require`, sin CA | `fe_sendauth: no password supplied`: `require` acepta un servidor sin comprobar su nombre |
+
+B y C se conectan al mismo servidor y solo cambia el modo. Es justo la
+protección que añade la revisión 2: con `require`, el ETL hablaría con
+cualquier servidor que respondiera en esa dirección con un certificado
+cualquiera, y le enviaría los datos de la carga.
+
+Capturas: `17a_helm_lint.png` y `17b_helm_template_cronjob.png` (lint y
+CronJob generado), `18_helm_install_upgrade.png` (`helm history` con las
+revisiones 1 y 2) y `18b_verify_full_negativa.png` (los tres casos de la
+prueba negativa).
+
 ## Tareas pendientes
 
 | Fase | Tarea | Motivo |
 |------|-------|--------|
 | 2 | Actualizar cert-manager a la serie 1.22 cuando se publique | La v1.21.3 no incluye Kubernetes 1.37 en su matriz de soporte (ver Decisiones técnicas). |
-| 3 | TLS con `PGSSLMODE=verify-full`: montar en el pod del ETL el certificado de la CA de CloudNativePG (`agroeco-pg-ca`, clave `ca.crt`) y apuntar a él con `PGSSLROOTCERT` | Con `require` la conexión va cifrada, pero no se verifica la identidad del servidor. En el chart, el Job y el CronJob salen de una sola plantilla, así que el cambio se hace una vez. |
-
+| 4 | Añadir mensajes DEBUG al ETL: URL y tamaño de cada descarga, y filas antes y después de cada limpieza | Hoy `ETL_NIVEL_LOG=DEBUG` no muestra nada más que `INFO` ([TS-06](docs/TROUBLESHOOTING.md#ts-06--el-nivel-debug-de-dev-no-muestra-nada-más-que-prod)). El cambio llega con la imagen que construya GitHub Actions y una nueva `appVersion` del chart. |
+| 4 | Decidir cómo se ejecuta la carga inicial con ArgoCD | ArgoCD convierte el hook `post-install` en `PostSync` y lo ejecutaría en cada sincronización, no solo al instalar. |
 ## Mejoras posibles
 
 - **Cierre ordenado ante `SIGTERM`.** Instalar en `main.py` un manejador de

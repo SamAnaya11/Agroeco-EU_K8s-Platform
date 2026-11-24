@@ -1,0 +1,24 @@
+# Parámetros del ETL que NO son secretos, como variables de entorno (envFrom).
+# Usuario y contraseña llegan aparte, desde el Secret de credenciales.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "agroeco-etl.fullname" . }}
+  labels:
+    {{- include "agroeco-etl.labels" . | nindent 4 }}
+data:
+  # Carpeta de raw/ y processed/ (volumen emptyDir "datos")
+  ETL_DIR_DATOS: "/datos"
+  ETL_NIVEL_LOG: {{ .Values.etl.nivelLog | quote }}
+  ETL_CARGAR_BD: {{ .Values.postgres.enabled | quote }}
+  {{- if .Values.postgres.enabled }}
+  # Conexión a PostgreSQL (variables estándar de libpq)
+  PGHOST: {{ .Values.postgres.host | quote }}
+  PGPORT: {{ .Values.postgres.port | quote }}
+  PGDATABASE: {{ .Values.postgres.database | quote }}
+  PGSSLMODE: {{ .Values.postgres.tls.sslmode | quote }}
+  {{- if include "agroeco-etl.verificaCA" . }}
+  # CA del clúster CloudNativePG, montada desde el Secret {{ .Values.postgres.tls.caSecret }}
+  PGSSLROOTCERT: "{{ include "agroeco-etl.rutaCA" . }}/ca.crt"
+  {{- end }}
+  {{- end }}

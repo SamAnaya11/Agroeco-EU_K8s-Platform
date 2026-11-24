@@ -1,0 +1,26 @@
+# Chart del ETL Agroeco-EU: descarga de Eurostat, limpieza y carga en
+# PostgreSQL, como Job de carga inicial y CronJob mensual.
+#
+# Solo contiene el ETL. PostgreSQL (CloudNativePG), su backup, Garage, el
+# namespace y los Secrets se gestionan aparte: un "helm uninstall" del ETL
+# nunca debe poder borrar la base de datos ni sus credenciales.
+apiVersion: v2
+name: agroeco-etl
+description: ETL de superficie de agricultura ecológica en la UE (Eurostat a PostgreSQL) como Job y CronJob
+type: application
+
+# Versión del chart: cambia cuando cambian las plantillas o los valores
+version: 0.1.0
+
+# Versión del ETL: etiqueta de imagen por defecto (values.yaml → image.tag)
+appVersion: "0.1.0"
+
+# CronJob.spec.timeZone es estable desde 1.27; el chart se ha probado en 1.37.
+# El "-0" permite versiones con sufijo, como v1.37.2+k3s1.
+kubeVersion: ">=1.33.0-0"
+
+keywords:
+  - etl
+  - eurostat
+  - postgresql
+  - cronjob

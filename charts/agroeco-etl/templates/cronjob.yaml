@@ -1,0 +1,23 @@
+# Ejecución programada del ETL (sustituye al timer trigger de Azure Functions).
+# El Job que crea en cada disparo sale de la plantilla única "agroeco-etl.jobSpec".
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "agroeco-etl.fullname" . }}-mensual
+  labels:
+    {{- include "agroeco-etl.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.cronjob.schedule | quote }}
+  timeZone: {{ .Values.cronjob.timeZone | quote }}
+  suspend: {{ .Values.cronjob.suspend }}
+  concurrencyPolicy: {{ .Values.cronjob.concurrencyPolicy }}
+  startingDeadlineSeconds: {{ .Values.cronjob.startingDeadlineSeconds }}
+  # Sin TTL en los Jobs: el historial lo limitan estos dos valores
+  successfulJobsHistoryLimit: {{ .Values.cronjob.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.cronjob.failedJobsHistoryLimit }}
+  jobTemplate:
+    metadata:
+      labels:
+        {{- include "agroeco-etl.labels" . | nindent 8 }}
+    spec:
+      {{- include "agroeco-etl.jobSpec" . | nindent 6 }}
