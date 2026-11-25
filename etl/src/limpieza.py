@@ -137,6 +137,15 @@ def resumen_calidad(nombre: str, largo: pd.DataFrame) -> str:
             f"({100 * sin_dato / total:.0f} %) | {con_nota:>5,} con nota").replace(",", ".")
 
 
+def log_filtro(nombre: str, antes: int, despues: int, criterio: str) -> None:
+    """Solo con ETL_NIVEL_LOG=DEBUG: filas antes y después de un filtro (no cambia los datos)."""
+    # El punto de miles se pone solo en los números: el criterio es texto
+    # libre y puede llevar comas
+    antes_texto = f"{antes:>7,}".replace(",", ".")
+    despues_texto = f"{despues:>6,}".replace(",", ".")
+    log.debug(f"     {nombre:<12} {antes_texto} -> {despues_texto} filas ({criterio})")
+
+
 def limpiar(archivos_raw: dict[str, bytes]) -> dict[str, pd.DataFrame]:
     """
     Recibe {nombre_tabla_eurostat: contenido_tsv} y devuelve las 6 tablas
@@ -162,11 +171,13 @@ def limpiar(archivos_raw: dict[str, bytes]) -> dict[str, pd.DataFrame]:
     # ------------------------------------------------------------------
     sup = leer_tsv_eurostat(archivos_raw["org_cropar"])
     informe.append(resumen_calidad("org_cropar", sup))
+    filas_antes = len(sup)
     sup = sup[(sup["unit"] == "HA")
               & sup["crops"].isin(CULTIVOS)
               & sup["agprdmet"].isin(METODOS)
               & sup["geo"].isin(paises_validos)
               & sup["valor"].notna()]
+    log_filtro("org_cropar", filas_antes, len(sup), "hectáreas, 17 cultivos, 3 métodos, UE, con valor")
     fact_superficie = pd.DataFrame({
         "anio": sup["anio"],
         "codigo_pais": sup["geo"],
@@ -181,7 +192,9 @@ def limpiar(archivos_raw: dict[str, bytes]) -> dict[str, pd.DataFrame]:
     # ------------------------------------------------------------------
     pct = leer_tsv_eurostat(archivos_raw["sdg_02_40"])
     informe.append(resumen_calidad("sdg_02_40", pct))
+    filas_antes = len(pct)
     pct = pct[pct["geo"].isin(paises_validos) & pct["valor"].notna()]
+    log_filtro("sdg_02_40", filas_antes, len(pct), "UE, con valor")
     fact_pct_sau = pd.DataFrame({
         "anio": pct["anio"],
         "codigo_pais": pct["geo"],
@@ -194,10 +207,12 @@ def limpiar(archivos_raw: dict[str, bytes]) -> dict[str, pd.DataFrame]:
     # ------------------------------------------------------------------
     ope = leer_tsv_eurostat(archivos_raw["org_coptyp"])
     informe.append(resumen_calidad("org_coptyp", ope))
+    filas_antes = len(ope)
     ope = ope[(ope["procstat"] == "REG_END")
               & ope["operator"].isin(OPERADORES)
               & ope["geo"].isin(paises_validos)
               & ope["valor"].notna()]
+    log_filtro("org_coptyp", filas_antes, len(ope), "registrados a fin de año, 7 tipos, UE, con valor")
     fact_operadores = pd.DataFrame({
         "anio": ope["anio"],
         "codigo_pais": ope["geo"],
@@ -211,10 +226,12 @@ def limpiar(archivos_raw: dict[str, bytes]) -> dict[str, pd.DataFrame]:
     # ------------------------------------------------------------------
     gan = leer_tsv_eurostat(archivos_raw["org_lstspec"])
     informe.append(resumen_calidad("org_lstspec", gan))
+    filas_antes = len(gan)
     gan = gan[(gan["unit"] == "HD")
               & gan["animals"].isin(ESPECIES)
               & gan["geo"].isin(paises_validos)
               & gan["valor"].notna()]
+    log_filtro("org_lstspec", filas_antes, len(gan), "cabezas, 4 especies, UE, con valor")
     fact_ganaderia = pd.DataFrame({
         "anio": gan["anio"],
         "codigo_pais": gan["geo"],

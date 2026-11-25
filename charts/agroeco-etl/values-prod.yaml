@@ -8,6 +8,14 @@
 #   helm install agroeco-etl charts/agroeco-etl -n agroeco \
 #     -f charts/agroeco-etl/values-prod.yaml --timeout 10m
 
+# Imagen de prod, siempre explícita: subir appVersion en Chart.yaml no cambia
+# prod. Se cambia solo con un commit de promoción (repositorio, etiqueta y
+# digest del resumen del workflow), y ArgoCD lo despliega.
+image:
+  repository: agroeco-etl
+  tag: "0.1.0"
+  digest: ""
+
 etl:
   nivelLog: INFO
 

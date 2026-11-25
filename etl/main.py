@@ -37,6 +37,9 @@ def configurar_logs() -> None:
 def main() -> int:
     configurar_logs()
     log = logging.getLogger("main")
+    # Versión de la imagen (ETL_VERSION se fija al construirla): así el log de
+    # cada ejecución dice qué versión del ETL ha corrido
+    log.info(f"agroeco-etl {os.environ.get('ETL_VERSION', 'desconocida')}")
 
     if os.environ.get("PRUEBA_ALERTA") == "1":
         log.error("Fallo provocado a propósito para probar la alerta (PRUEBA_ALERTA=1)")

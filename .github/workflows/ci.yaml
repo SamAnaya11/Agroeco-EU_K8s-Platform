@@ -1,0 +1,259 @@
+# CI del proyecto Agroeco-EU K8s Platform.
+#
+#   1. Validar chart: helm lint --strict con los valores por defecto, dev y prod.
+#   2. Imagen del ETL (solo si cambia etl/ o se lanza a mano): construye,
+#      prueba de verdad y publica en ghcr.io con la versión de appVersion,
+#      que es inmutable: si la etiqueta ya existe, falla.
+#
+# El despliegue NO se hace aquí: el resumen de la ejecución da el bloque para
+# values-prod.yaml, y el commit de promoción lo aplica ArgoCD (GitOps).
+#
+# Seguridad: sin permisos por defecto, actions fijadas por SHA de commit,
+# solo el GITHUB_TOKEN automático y datos de GitHub pasados por variables de
+# entorno (nunca interpolados dentro de los scripts).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "etl/**"
+      - "charts/agroeco-etl/**"
+      - ".github/workflows/ci.yaml"
+  workflow_dispatch:
+
+# Ningún permiso salvo los que pide cada job
+permissions: {}
+
+# Nunca dos ejecuciones a la vez sobre la misma rama (la comprobación de
+# "etiqueta ya publicada" no debe competir con otra publicación)
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    # bash explícito: GitHub añade -eo pipefail (un fallo en una tubería falla el paso)
+    shell: bash
+
+env:
+  # La misma versión de Helm que en WSL
+  HELM_VERSION: v4.3.2
+  CHART: charts/agroeco-etl
+
+jobs:
+  validar:
+    name: Validar chart
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      etl: ${{ steps.cambios.outputs.etl }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Historial completo: hace falta el commit anterior al push para el diff
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Instalar Helm
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: helm lint --strict (por defecto, dev y prod)
+        run: |
+          helm lint --strict "$CHART"
+          helm lint --strict "$CHART" -f "$CHART/values-dev.yaml"
+          helm lint --strict "$CHART" -f "$CHART/values-prod.yaml"
+
+      - name: ¿Cambia el ETL?
+        id: cambios
+        env:
+          EVENTO: ${{ github.event_name }}
+          ANTES: ${{ github.event.before }}
+        run: |
+          # A mano, o sin un commit anterior válido (primer push): se construye
+          if [ "$EVENTO" != "push" ] || ! git cat-file -e "${ANTES}^{commit}" 2>/dev/null; then
+            etl=true
+          elif git diff --quiet "$ANTES" "$GITHUB_SHA" -- etl/; then
+            etl=false
+          else
+            etl=true
+          fi
+          echo "etl=$etl" >> "$GITHUB_OUTPUT"
+          echo "Cambios en etl/: $etl"
+
+  imagen:
+    name: Imagen del ETL
+    needs: validar
+    if: needs.validar.outputs.etl == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # Publicar en ghcr.io con el GITHUB_TOKEN (sin tokens personales)
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Versión e imagen
+        id: version
+        run: |
+          version=$(awk -F'"' '/^appVersion:/ {print $2}' "$CHART/Chart.yaml")
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::appVersion no válida en $CHART/Chart.yaml: '$version'"
+            exit 1
+          fi
+          # ghcr.io exige minúsculas
+          imagen="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/agroeco-etl"
+          {
+            echo "version=$version"
+            echo "imagen=$imagen"
+            # Fecha del commit: compilación reproducible (misma fecha en las
+            # dos construcciones de este job)
+            echo "epoch=$(git log -1 --format=%ct)"
+          } >> "$GITHUB_OUTPUT"
+          echo "Imagen: $imagen:$version"
+
+      - name: Iniciar sesión en ghcr.io
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Preparar Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: La etiqueta no existe todavía (inmutabilidad)
+        env:
+          IMAGEN: ${{ steps.version.outputs.imagen }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if salida=$(docker buildx imagetools inspect "$IMAGEN:$VERSION" 2>&1); then
+            echo "::error::$IMAGEN:$VERSION ya está publicada. Las etiquetas son inmutables: sube appVersion en $CHART/Chart.yaml."
+            exit 1
+          fi
+          # Solo "no existe" permite seguir; cualquier otro error (red,
+          # tiempo de espera) detiene el job en lugar de arriesgarse a
+          # sobrescribir. "denied" es lo que puede responder ghcr.io mientras
+          # el paquete no existe; si fuera falta real de permiso, la
+          # publicación fallaría igualmente y no se sobrescribiría nada.
+          if ! grep -qiE 'not found|manifest unknown|name unknown|denied' <<< "$salida"; then
+            echo "::error::No se pudo comprobar si $IMAGEN:$VERSION existe: $salida"
+            exit 1
+          fi
+          echo "$IMAGEN:$VERSION no existe: se puede publicar"
+
+      - name: Metadatos (etiquetas y labels OCI)
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ steps.version.outputs.imagen }}
+          # Versión del ETL y commit exacto (sha-<7 caracteres>)
+          tags: |
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=sha
+          labels: |
+            org.opencontainers.image.title=agroeco-etl
+            org.opencontainers.image.description=ETL de agricultura ecológica de Eurostat a PostgreSQL
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+
+      - name: Construir para la prueba
+        id: prueba
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.version.outputs.epoch }}
+        with:
+          context: etl
+          build-args: ETL_VERSION=${{ steps.version.outputs.version }}
+          labels: ${{ steps.meta.outputs.labels }}
+          tags: agroeco-etl:prueba
+          load: true
+          push: false
+          # La carga en Docker no admite atestaciones; se añaden al publicar
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Prueba de humo (extracción y limpieza reales, nivel DEBUG)
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Mismas restricciones que en Kubernetes: raíz de solo lectura,
+          # usuario 10001 y carpetas de escritura temporales. Sin base de datos.
+          docker run --rm --read-only --user 10001:10001 \
+            --mount type=tmpfs,destination=/datos,tmpfs-mode=1777 \
+            --mount type=tmpfs,destination=/tmp,tmpfs-mode=1777 \
+            -e ETL_CARGAR_BD=false -e ETL_NIVEL_LOG=DEBUG \
+            agroeco-etl:prueba | tee salida.log
+
+          grep -q "agroeco-etl $VERSION" salida.log \
+            || { echo "::error::El log no muestra la versión $VERSION"; exit 1; }
+          grep -q "Pipeline terminado correctamente" salida.log \
+            || { echo "::error::El pipeline no terminó correctamente"; exit 1; }
+          debug=$(grep -c " DEBUG " salida.log || true)
+          [ "$debug" -gt 0 ] \
+            || { echo "::error::Sin líneas DEBUG con ETL_NIVEL_LOG=DEBUG"; exit 1; }
+          echo "Prueba superada: $debug líneas DEBUG"
+
+      - name: Publicar en ghcr.io
+        id: publicar
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.version.outputs.epoch }}
+        with:
+          context: etl
+          build-args: ETL_VERSION=${{ steps.version.outputs.version }}
+          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.meta.outputs.tags }}
+          push: true
+          # Atestación de procedencia (cómo y desde qué commit se construyó) y SBOM
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha
+
+      - name: La imagen publicada es la probada
+        env:
+          PROBADA: ${{ steps.prueba.outputs.imageid }}
+          PUBLICADA: ${{ steps.publicar.outputs.imageid }}
+        run: |
+          echo "ID de la imagen probada:   $PROBADA"
+          echo "ID de la imagen publicada: $PUBLICADA"
+          if [ -z "$PROBADA" ] || [ "$PROBADA" != "$PUBLICADA" ]; then
+            echo "::error::La imagen publicada no es la misma que pasó la prueba"
+            exit 1
+          fi
+
+      - name: Resumen para la promoción
+        env:
+          IMAGEN: ${{ steps.version.outputs.imagen }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DIGEST: ${{ steps.publicar.outputs.digest }}
+          ETIQUETAS: ${{ steps.meta.outputs.tags }}
+        run: |
+          {
+            echo "## Imagen publicada"
+            echo
+            echo "| Dato | Valor |"
+            echo "|------|-------|"
+            echo "| Imagen | \`$IMAGEN\` |"
+            echo "| Etiquetas | $(sed 's/.*:/`/; s/$/`/' <<< "$ETIQUETAS" | paste -sd ' ' -) |"
+            echo "| Digest | \`$DIGEST\` |"
+            echo
+            echo "## Promoción a prod"
+            echo
+            echo "Bloque para \`charts/agroeco-etl/values-prod.yaml\` (commit de promoción):"
+            echo
+            echo '```yaml'
+            echo "image:"
+            echo "  repository: $IMAGEN"
+            echo "  tag: \"$VERSION\""
+            echo "  digest: $DIGEST"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

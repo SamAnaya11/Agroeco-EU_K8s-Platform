@@ -42,9 +42,16 @@ def descargar(tabla: str) -> bytes:
     peticion = urllib.request.Request(url, headers={"User-Agent": "agroeco-cloud-pipeline/1.0"})
 
     for intento in range(1, INTENTOS + 1):
+        log.debug(f"     GET {url} (intento {intento}/{INTENTOS})")
+        inicio = time.monotonic()
         try:
             with urllib.request.urlopen(peticion, timeout=120) as respuesta:
-                return respuesta.read()
+                datos = respuesta.read()
+                # Solo con ETL_NIVEL_LOG=DEBUG: respuesta HTTP, tamaño exacto y duración
+                bytes_texto = f"{len(datos):,}".replace(",", ".")   # 1.234.567, como el resto del log
+                log.debug(f"     {tabla}: HTTP {respuesta.status}, {bytes_texto} bytes "
+                          f"en {time.monotonic() - inicio:.2f} s")
+                return datos
         except OSError as error:  # errores de red y HTTP heredan de OSError
             if intento == INTENTOS:
                 raise
@@ -58,7 +65,8 @@ def descargar_todo() -> dict[str, bytes]:
     for tabla, descripcion in TABLAS.items():
         log.info(f"     Descargando {tabla:<12} ({descripcion})...")
         archivos[tabla] = descargar(tabla)
-        log.info(f"     -> {len(archivos[tabla]) / 1024:,.0f} KB")
+        kb_texto = f"{len(archivos[tabla]) / 1024:,.0f}".replace(",", ".")   # punto de miles
+        log.info(f"     -> {kb_texto} KB")
     return archivos
 
 

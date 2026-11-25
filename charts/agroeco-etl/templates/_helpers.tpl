@@ -24,18 +24,31 @@ app.kubernetes.io/name: {{ include "agroeco-etl.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 
+{{/* Versión del ETL que se despliega: image.tag o, si está vacía, appVersion.
+     La etiqueta app.kubernetes.io/version dice así la versión que corre de
+     verdad, aunque el chart ya traiga una appVersion más nueva. */}}
+{{- define "agroeco-etl.version" -}}
+{{- .Values.image.tag | default .Chart.AppVersion -}}
+{{- end -}}
+
 {{/* Etiquetas estándar de todos los objetos */}}
 {{- define "agroeco-etl.labels" -}}
 helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
 {{ include "agroeco-etl.selectorLabels" . }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/version: {{ include "agroeco-etl.version" . | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/part-of: agroeco-eu
 {{- end -}}
 
-{{/* Imagen con etiqueta fijada: image.tag o, si está vacía, appVersion */}}
+{{/* Imagen con etiqueta fijada y, si se indica, digest:
+     repo:tag o repo:tag@sha256:… (con digest manda el digest) */}}
 {{- define "agroeco-etl.image" -}}
-{{- printf "%s:%s" .Values.image.repository (.Values.image.tag | default .Chart.AppVersion) -}}
+{{- $imagen := printf "%s:%s" .Values.image.repository (include "agroeco-etl.version" .) -}}
+{{- if .Values.image.digest -}}
+{{- printf "%s@%s" $imagen .Values.image.digest -}}
+{{- else -}}
+{{- $imagen -}}
+{{- end -}}
 {{- end -}}
 
 {{/* "true" si la conexión verifica la CA del servidor (verify-ca o

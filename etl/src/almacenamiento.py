@@ -31,7 +31,8 @@ def guardar(dir_datos: Path, carpeta: str, ruta: str, datos: bytes) -> None:
     destino = dir_datos / carpeta / ruta
     destino.parent.mkdir(parents=True, exist_ok=True)
     destino.write_bytes(datos)
-    log.info(f"     Guardado {carpeta}/{ruta} ({len(datos) / 1024:,.0f} KB)")
+    kb_texto = f"{len(datos) / 1024:,.0f}".replace(",", ".")   # punto de miles, como el resto del log
+    log.info(f"     Guardado {carpeta}/{ruta} ({kb_texto} KB)")
 
 
 def guardar_csv(dir_datos: Path, carpeta: str, ruta: str, df: pd.DataFrame) -> None:

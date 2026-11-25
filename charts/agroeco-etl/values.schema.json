@@ -8,13 +8,18 @@
     "image": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repository", "tag", "pullPolicy"],
+      "required": ["repository", "tag", "digest", "pullPolicy"],
       "properties": {
         "repository": { "type": "string", "minLength": 1 },
         "tag": {
           "type": "string",
           "description": "Vacío = appVersion. Nunca latest.",
           "not": { "const": "latest" }
+        },
+        "digest": {
+          "type": "string",
+          "description": "Vacío o sha256: con 64 caracteres hexadecimales.",
+          "pattern": "^(sha256:[a-f0-9]{64})?$"
         },
         "pullPolicy": { "enum": ["IfNotPresent", "Always", "Never"] }
       }

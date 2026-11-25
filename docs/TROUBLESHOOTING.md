@@ -14,6 +14,8 @@ solución aplicada y cómo evitar que se repita.
 | [TS-04](#ts-04--kubectl-apply-responde-configured-sin-haber-cambios) | 2 | `kubectl apply` responde `configured` sin haber cambios |
 | [TS-05](#ts-05--falta-00000002history-en-el-archivo-de-wal) | 2 | Falta `00000002.history` en el archivo de WAL |
 | [TS-06](#ts-06--el-nivel-debug-de-dev-no-muestra-nada-más-que-prod) | 3 | El nivel DEBUG de dev no muestra nada más que prod |
+| [TS-07](#ts-07--aviso-de-last-applied-configuration-en-la-primera-sincronización-de-argocd) | 4 | Aviso de `last-applied-configuration` en la primera sincronización de ArgoCD |
+| [TS-08](#ts-08--la-interfaz-de-argocd-da-request-has-been-terminated-al-iniciar-sesión) | 4 | La interfaz de ArgoCD da «Request has been terminated» al iniciar sesión |
 
 ---
 
@@ -307,6 +309,113 @@ solución aplicada y cómo evitar que se repita.
   imagen, en lugar de presentarlo como una ventaja de dev. La lección: una
   diferencia de configuración solo cuenta si cambia el comportamiento
   observable.»
+
+---
+
+## TS-07 · Aviso de `last-applied-configuration` en la primera sincronización de ArgoCD
+
+- **Fase:** 4 – GitOps y CI/CD (paso 4.2, adopción de la release de Helm).
+- **Síntoma:** la primera sincronización de la Application `agroeco-etl`
+  terminó `Succeeded`, con `configmap/agroeco-etl configured` y
+  `cronjob.batch/agroeco-etl-mensual configured`, pero cada uno con el aviso
+  `… missing the kubectl.kubernetes.io/last-applied-configuration annotation
+  … will be patched automatically`.
+- **Causa:** es el rastro previsto de la migración de Helm a ArgoCD, no un
+  fallo. ArgoCD aplica por defecto con el mismo mecanismo que
+  `kubectl apply` en el cliente (*client-side apply*). Ese mecanismo guarda
+  en la anotación `kubectl.kubernetes.io/last-applied-configuration` lo
+  último que aplicó, para saber en el siguiente apply qué campos debe
+  borrar. Helm 4 creó y actualizó los dos objetos en la Fase 3 con
+  *server-side apply*, que no usa esa anotación. Al no encontrarla, el apply
+  de ArgoCD avisa y la añade en esa misma operación.
+- **Cómo se comprobó:**
+  - **Los objetos se adoptaron sin cambios.** Se comparó una foto tomada
+    antes de crear la Application con el estado posterior:
+    - Mismo UID y misma fecha de creación: no se recrearon.
+    - Misma `metadata.generation` en el CronJob (2): no cambió su `spec`.
+    - Solo se añadieron anotaciones: `argocd.argoproj.io/tracking-id`
+      (`agroeco-etl:batch/CronJob:agroeco/agroeco-etl-mensual`) y
+      `last-applied-configuration`.
+  - **Quién ha escrito en el CronJob** (`managedFields`):
+
+    | Gestor | Operación | Hora (UTC) | Qué fue |
+    |--------|-----------|------------|---------|
+    | `helm` | `Apply` | 2026-11-24 16:59:06 | `helm upgrade` a la revisión 2 (Helm 4 con *server-side apply*) |
+    | `k3s` | `Update` (subrecurso `status`) | 2026-11-24 17:02:13 | Controlador de CronJobs, en la ejecución manual |
+    | `argocd-controller` | `Update` | 2026-11-24 21:24:19 | Primera sincronización de ArgoCD (*client-side apply*) |
+
+  - **La anotación ya existe.** Empieza por
+    `{"apiVersion":"batch/v1","kind":"CronJob","metadata":{"annotations":{"argocd.argoproj.io/tracking-id…`:
+    guarda el manifiesto deseado tal como lo aplicó ArgoCD, con su
+    anotación de seguimiento.
+- **Solución:** ninguna. Es un aviso de un solo uso: con la anotación ya
+  puesta, las sincronizaciones siguientes no deberían repetirlo. Se
+  comprobará en la primera corrección de drift (Experimento E).
+- **¿Server-Side Apply?** ArgoCD admite `ServerSideApply=true` en
+  `syncOptions`. Con esa opción, el servidor aplica y registra quién
+  gestiona cada campo (`managedFields`), no se usa la anotación y la
+  comparación también se hace en el servidor. No se activa ahora:
+  - Los dos objetos se sincronizan sin diferencias con el método actual.
+  - Los datos anteriores muestran el riesgo concreto. Los campos que fijó
+    Helm siguen a nombre del gestor `helm` (operación `Apply`). Con
+    *server-side apply*, un campo que se quitara del chart dejaría de ser
+    de ArgoCD pero seguiría siendo de `helm`, y el servidor no lo borraría.
+    Antes de activarlo habría que retirar las entradas de `helm` de
+    `managedFields`.
+  
+  Queda como mejora posible en el README.
+- **Prevención:** en una migración de Helm (o de `kubectl create`) a
+  ArgoCD, este aviso es esperable en la primera sincronización. Para saber
+  si la adopción cambió algo se miran el UID, la fecha de creación y la
+  `generation`, no el mensaje de la operación (mismo criterio que en
+  [TS-04](#ts-04--kubectl-apply-responde-configured-sin-haber-cambios)).
+- **Frase para entrevista:** «Al pasar el ETL de Helm a ArgoCD, la primera
+  sincronización avisó de que a los objetos les faltaba la anotación
+  `last-applied-configuration`. Era lo esperado: ArgoCD aplica como
+  `kubectl apply` y necesita esa anotación, que Helm no pone. Antes de
+  crear la Application había guardado el UID, la fecha de creación y la
+  `generation` de cada objeto, y después seguían iguales: ArgoCD los adoptó
+  sin recrearlos ni tocar su `spec`. Valoré cambiar a Server-Side Apply,
+  pero en `managedFields` vi que Helm 4 había aplicado con server-side
+  apply y seguía figurando como dueño de los campos. Con ese cambio, un
+  campo quitado del chart no se habría borrado. No lo hice en mitad de la
+  migración: no había ningún problema que resolver.»
+
+---
+
+## TS-08 · La interfaz de ArgoCD da «Request has been terminated» al iniciar sesión
+
+- **Fase:** 4 – GitOps y CI/CD (paso 4.2, acceso a la interfaz para la
+  captura 20).
+- **Síntoma:** al iniciar sesión en `https://localhost:8080`, la interfaz
+  mostró `Request has been terminated … Origin is not allowed by
+  Access-Control-Allow-Origin …`.
+- **Causa:** no era un problema de CORS. Es el mensaje genérico que da la
+  interfaz de ArgoCD cuando una petición no recibe respuesta: enumera
+  varias «causas posibles» (red caída, CORS, página descargándose) sin
+  saber cuál es. El origen era el mismo (`https://localhost:8080`, la propia
+  interfaz), y con el túnel reabierto el mismo inicio de sesión funcionó sin
+  cambiar nada más. Por tanto, el `kubectl port-forward` de Ubuntu 2 ya no
+  transmitía. No se guardó su salida, así que no se sabe por qué se cortó.
+  Las causas habituales son un error `lost connection to pod`, o que el pod
+  al que estaba atado el túnel se recree (`port-forward` a un Service se
+  ata a un pod concreto al arrancar y no sigue a su sustituto).
+- **Solución:** cerrar y volver a abrir
+  `kubectl port-forward svc/argocd-server -n argocd 8080:443`, y volver a
+  iniciar sesión por `https`.
+- **Prevención:**
+  - Ante un error de red en la interfaz, se mira primero la terminal del
+    `port-forward`.
+  - Antes de iniciar sesión, se comprueba el túnel desde Ubuntu 1 con
+    `curl -sk https://localhost:8080/healthz`, que debe responder `ok`.
+  - El túnel se abre después de cualquier reinicio de `argocd-server`,
+    nunca antes.
+- **Frase para entrevista:** «Al entrar en ArgoCD, la interfaz dio un error
+  que mencionaba CORS. No me fié del texto: era el mensaje genérico para
+  cualquier petición sin respuesta, y el origen era el propio servidor. El
+  problema estaba en el `port-forward`, que ya no transmitía. Lo reabrí y
+  entró a la primera. Ahora, antes de iniciar sesión, compruebo el túnel con
+  un `curl` a `/healthz` y no le doy más vueltas a la interfaz.»
 
 ---
 

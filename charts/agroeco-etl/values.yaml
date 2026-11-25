@@ -7,11 +7,16 @@
 # que ningún entorno pueda relajarla.
 
 image:
-  # Imagen construida en la Fase 1 e importada en k3d (k3d image import)
-  repository: agroeco-etl
+  # Imagen publicada por GitHub Actions (paquete público: sin imagePullSecret)
+  repository: ghcr.io/samanaya11/agroeco-etl
   # Vacío = appVersion de Chart.yaml (versión fijada, nunca "latest")
   tag: ""
-  # IfNotPresent: la imagen importada en k3d no se descarga de ningún registro
+  # sha256:… del resumen de la ejecución del workflow. Si se indica, la
+  # imagen queda como repo:tag@digest y Kubernetes la descarga por digest:
+  # aunque alguien reescribiera la etiqueta, se ejecuta la imagen revisada.
+  digest: ""
+  # IfNotPresent: con etiqueta inmutable (y digest) no hace falta volver a
+  # consultar el registro en cada ejecución
   pullPolicy: IfNotPresent
 
 etl:

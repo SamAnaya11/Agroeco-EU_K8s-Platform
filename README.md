@@ -5,7 +5,7 @@ Migración del pipeline ETL de agricultura ecológica de la UE
 serverless en Azure) a una plataforma Kubernetes con PostgreSQL gestionado
 por operador, empaquetado con Helm, despliegue GitOps y CI/CD.
 
-> Estado: en construcción (Fase 3 completada: chart de Helm propio, TLS `verify-full` y Experimento D; siguiente: Fase 4 – GitOps y CI/CD).
+> Estado: en construcción (Fase 4 en curso: repositorio en GitHub y ArgoCD sincronizando el chart desde Git; siguientes: Experimento E y CI/CD con GitHub Actions).
 
 ## Qué hace
 
@@ -24,9 +24,10 @@ probada y devuelve los mismos datos.
 
 ```mermaid
 flowchart LR
-    dev[Commit en GitHub] --> gha[GitHub Actions<br/>build + push]
-    gha --> ghcr[(ghcr.io<br/>imagen del ETL)]
-    gha -->|actualiza etiqueta| repo[(Repositorio Git<br/>chart Helm)]
+    dev[Desarrollador] -->|push a main| repo[(Repositorio GitHub<br/>código + chart Helm)]
+    repo -->|cambios del ETL| gha[GitHub Actions<br/>lint + build + push]
+    gha --> ghcr[(ghcr.io<br/>imagen inmutable)]
+    dev -.->|commit de promoción<br/>etiqueta + digest| repo
 
     subgraph k3d["Clúster k3d (WSL 2) · 1 server + 2 agents"]
         argo[ArgoCD] -->|pull| repo
@@ -66,8 +67,9 @@ _(Se completará con las versiones exactas verificadas en cada fase.)_
 | Certificados (requisito del plugin de backup) | cert-manager (chart OCI `quay.io/jetstack/charts/cert-manager`) | v1.21.3 |
 | Backup de PostgreSQL | Barman Cloud Plugin (chart `plugin-barman-cloud`) | v0.16.0 (chart 0.9.0) |
 | Almacenamiento S3 para backups | Garage (`dxflrs/garage`), un solo nodo | v2.5.0 |
-| GitOps | ArgoCD | — |
+| GitOps | Argo CD (chart oficial `argo-cd`) | v3.6.3 (chart 10.19.1) |
 | CI/CD | GitHub Actions + ghcr.io | — |
+| CLI de GitHub | `gh` (repositorio APT oficial, clave `7F38BBB5…62313325` verificada) | 2.105.0 |
 
 ## Decisiones técnicas
 
@@ -158,7 +160,8 @@ _(Se completará con las versiones exactas verificadas en cada fase.)_
   cuanto cambiara la plantilla. Como hook, se ejecuta una vez al instalar y
   Helm espera a que termine. Las ejecuciones posteriores se lanzan desde el
   CronJob (`kubectl create job --from=cronjob/…`), con la misma plantilla.
-  Helm no borra los hooks al desinstalar: lo hace su TTL.
+  Helm no borra los hooks al desinstalar: lo hace su TTL. Con ArgoCD la
+  carga inicial está desactivada (ver más abajo).
 - **TLS con `verify-full` hacia PostgreSQL.** El pod monta solo la clave
   `ca.crt` del Secret `agroeco-pg-ca` que genera CloudNativePG, nunca
   `ca.key`, como carpeta y sin `subPath`, para que la renovación de la CA
@@ -168,6 +171,47 @@ _(Se completará con las versiones exactas verificadas en cada fase.)_
 - **Raw y processed en un volumen `emptyDir`.** Sustituyen a Blob Storage con
   la misma estructura por fecha. El destino persistente de los datos es
   PostgreSQL.
+- **Repositorio y paquete públicos.** ArgoCD lee Git sin credenciales, y el
+  clúster descarga la imagen de ghcr.io sin `imagePullSecret`: no hay ningún
+  token guardado en el clúster. En el repositorio están activados *secret
+  scanning* y *push protection*, además de gitleaks antes de cada push.
+- **ArgoCD mínimo** ([`argocd/values-argocd.yaml`](argocd/values-argocd.yaml)).
+  Usa el chart oficial con la versión fijada, cuya appVersion ya trae
+  Argo CD v3.6.3, sin sustituir la imagen. No lleva Dex (no hay inicio de
+  sesión externo) ni notificaciones, y el controlador de ApplicationSet
+  queda a 0 réplicas, porque el chart no permite desactivarlo. Todos los
+  componentes tienen un límite de memoria, para que nunca puedan quitársela
+  a PostgreSQL. El acceso es por `kubectl port-forward`, con el TLS propio
+  del servidor. El namespace `argocd` exige Pod Security `restricted`. Antes
+  de exigirlo se instaló solo con avisos y con una comprobación
+  `--dry-run=server`, y ninguna de las dos dio avisos.
+- **AppProject propio en lugar de `default`**
+  ([`argocd/01-proyecto-agroeco.yaml`](argocd/01-proyecto-agroeco.yaml)). El
+  proyecto `agroeco` solo admite este repositorio, el namespace `agroeco` y
+  dos tipos de objeto: ConfigMap y CronJob. No admite objetos de clúster, ni
+  `Secret` (las credenciales nunca vienen de Git), ni `Job`.
+- **Carga inicial desactivada en ArgoCD**
+  ([`argocd/02-app-agroeco-etl.yaml`](argocd/02-app-agroeco-etl.yaml)).
+  ArgoCD no distingue entre instalar y actualizar: cada operación es una
+  sincronización, y traduce el hook `post-install` a `PostSync`. La carga
+  inicial se ejecutaría en cada sincronización, y con `selfHeal` cada
+  corrección de drift relanzaría la descarga de Eurostat y la recarga
+  completa. Por eso la Application fija `cargaInicial.enabled: false` en
+  `valuesObject`, en Git y por encima de `values-prod.yaml`, que no cambia:
+  un `helm install` sigue lanzando la carga inicial. Como el proyecto no
+  admite `Job`, reactivarla en la Application haría fallar la
+  sincronización en lugar de recargar en cada una. En un clúster nuevo, la
+  primera carga es una acción puntual
+  (`kubectl create job --from=cronjob/agroeco-etl-mensual …`), no un estado
+  deseado.
+- **Sincronización automática con `prune` y `selfHeal`, sin borrado en
+  cascada.**
+  - `prune`: lo que desaparece de Git desaparece del clúster.
+  - `selfHeal`: los cambios manuales se revierten al estado de Git.
+  - La Application no lleva el finalizer
+    `resources-finalizer.argocd.argoproj.io`: borrarla deja el ConfigMap y
+    el CronJob en el clúster. Es el mismo criterio que con Helm: quitar la
+    herramienta de despliegue no debe tirar el ETL.
 
 ## Requisitos
 
@@ -229,7 +273,7 @@ Capturas: `13a_consulta_datos.png` (recuentos, vista y réplica) y
 | B | Job/CronJob frente a Deployment | ✅ Como Deployment, el ETL termina bien (código 0) y aun así se reinicia en bucle (`CrashLoopBackOff`) |
 | C | Failover de PostgreSQL | ✅ La réplica pasa a primaria 5,7 s después de borrar la primaria; el cliente vuelve a leer los mismos datos sin cambiar su configuración |
 | D | Mismo chart, distintos entornos | ✅ Un solo chart y una sola imagen generan dos entornos: prod carga en PostgreSQL con `verify-full` cada mes; dev solo extrae y limpia, con el CronJob suspendido y menos memoria reservada, sin base de datos ni Secrets |
-| E | GitOps: corrección de drift y despliegue desde Git | _pendiente_ |
+| E | GitOps: corrección de drift y despliegue desde Git | (1) ✅ ArgoCD revierte un cambio manual del CronJob en 2,0 s, con una sincronización parcial automática; los campos que Git no define no se vigilan · (2) _pendiente_ |
 | F | Alerta ante fallo del Job | _pendiente_ |
 | G | Limpieza completa | _pendiente_ |
 
@@ -503,6 +547,61 @@ Capturas: `19a1_exp_D_diff_configmap.png` y `19a2_exp_D_diff_cronjob.png`
 (diff entre los entornos) y `19b_exp_D_release_dev.png` (las dos releases y
 la ejecución de dev).
 
+### E · GitOps: corrección de drift y despliegue desde Git
+
+#### E (1) · Corrección automática del drift
+
+**Procedimiento.** Con la Application `agroeco-etl` en `Synced`/`Healthy`
+(commit `1f9a403`) se hacen dos cambios a mano en el CronJob que gestiona
+ArgoCD:
+- **Cambio en un campo declarado en Git.** Se suspende el CronJob, como si
+  alguien parara el ETL de prod:
+  `kubectl patch cronjob agroeco-etl-mensual --type merge -p '{"spec":{"suspend":true}}'`.
+  Una terminal vigila el CronJob con la hora de cada cambio, y otra lanza
+  el cambio.
+- **Cambio fuera de lo declarado.** Se añade una etiqueta que el chart no
+  define (`experimento=drift-etiqueta`).
+
+**Cronología del primer cambio** (UTC, 25-11-2026):
+
+| Hora | Δ | Qué ocurre | Fuente |
+|------|---|------------|--------|
+| 16:22:48,866 | 0 s | Se lanza `kubectl patch` | terminal |
+| 16:22:49,205 | +0,3 s | CronJob con `suspend: true`, `generation` 3 | vigilancia |
+| 16:22:49 | — | ArgoCD detecta el cambio: `Synced -> OutOfSync`, e inicia la sincronización automática a `1f9a403` | eventos |
+| **16:22:50,902** | **+2,0 s** | **CronJob de nuevo con `suspend: false`, `generation` 4** | vigilancia |
+| 16:22:50 | — | `Partial sync operation … succeeded` y `OutOfSync -> Synced` | eventos |
+
+**Resultado.**
+- **Corrección en 2,0 s desde el comando**, y 1,7 s desde que el cambio
+  quedó aplicado. En los 30 s siguientes no hubo ningún cambio más: ni
+  bucle ni lucha entre el cambio manual y ArgoCD.
+- **La lanzó ArgoCD, no una persona.** La operación figura como
+  `initiatedBy: {"automated":true}`, de 16:22:49Z a 16:22:50Z, `Succeeded`.
+  No hace falta esperar al ciclo de reconciliación de 2-3 min: ArgoCD vigila
+  los objetos que gestiona y detecta el cambio al momento.
+- **Solo se tocó lo desviado.** `selfHeal` lanzó una sincronización
+  parcial. El resultado solo incluye
+  `cronjob.batch/agroeco-etl-mensual configured`, y el ConfigMap ni
+  aparece.
+- **Sin el aviso de `last-applied-configuration`.** Se confirma que el aviso
+  de la primera sincronización era de un solo uso
+  ([TS-07](docs/TROUBLESHOOTING.md#ts-07--aviso-de-last-applied-configuration-en-la-primera-sincronización-de-argocd)).
+- **La `generation` deja rastro.** Pasa de 2 a 3 (cambio manual) y a 4
+  (corrección): el `spec` cambió dos veces y volvió a ser el de Git.
+
+**Alcance de `selfHeal`.** Tres minutos después de añadir la etiqueta
+`experimento=drift-etiqueta`, el intervalo máximo de reconciliación, la
+Application seguía `Synced` y la etiqueta seguía puesta. Con la comparación
+por defecto, ArgoCD solo vigila los campos que define Git: un campo añadido
+que el chart no menciona no cuenta como diferencia. `selfHeal` protege lo
+declarado, pero no impide añadir cosas. Lo que deba estar prohibido se
+declara en Git o se impide con permisos (RBAC) o con políticas de admisión.
+La etiqueta se quitó a mano al terminar.
+
+Captura: `21_exp_E_drift.png` (vigilancia con `false 2` → `true 3` →
+`false 4` y la operación automática de ArgoCD).
+
 ## Backup y restauración
 
 Sin un backup externo, la alta disponibilidad no protege frente a borrados
@@ -634,14 +733,89 @@ CronJob generado), `18_helm_install_upgrade.png` (`helm history` con las
 revisiones 1 y 2) y `18b_verify_full_negativa.png` (los tres casos de la
 prueba negativa).
 
+## Despliegue GitOps con ArgoCD
+
+Desde la Fase 4, el ETL de prod lo despliega ArgoCD desde la rama `main`
+de este repositorio, con la Application
+[`argocd/02-app-agroeco-etl.yaml`](argocd/02-app-agroeco-etl.yaml). ArgoCD
+no ejecuta `helm install`: genera los manifiestos con `helm template` (con
+Helm v4, igual que el proyecto) y los aplica. La release de Helm de la Fase 3
+deja de usarse.
+
+**Instalación.**
+- **Versión del chart.** Antes de fijar el chart 10.19.1 (Argo CD v3.6.3)
+  se comparó con el 10.19.0 más la imagen v3.6.3 sustituida a mano:
+  - Mismos valores por defecto: `diff` vacío.
+  - Mismos manifiestos generados, salvo 43 etiquetas `helm.sh/chart`.
+  - Las mismas imágenes: 6 × `quay.io/argoproj/argocd:v3.6.3` y Redis
+    `8.6.4-alpine`, sin Dex.
+- **Pod Security.** El `helm install` no dio ningún aviso de Pod Security
+  `restricted`, y tampoco lo hizo una prueba de la etiqueta `enforce` con
+  `--dry-run=server`. Después de subir el namespace a `restricted`, un
+  `rollout restart` de `argocd-server` creó un pod nuevo que pasó la
+  admisión, sin ningún `FailedCreate`.
+
+**Adopción sin recrear nada.** La Application usa `releaseName: agroeco-etl`.
+Así los objetos generados se llaman igual que los de la release de Helm, y
+ArgoCD los adopta en lugar de crearlos de nuevo.
+
+| Comprobación | Resultado |
+|--------------|-----------|
+| Antes: `helm template` con los valores de la Application frente al clúster (`kubectl diff`) | Solo `ConfigMap` y `CronJob`, diff vacío (código 0) |
+| Primera sincronización | `Synced`/`Healthy` en segundos, en el commit `1f9a403`, el mismo que `git rev-parse HEAD`; `configmap/agroeco-etl configured` y `cronjob.batch/agroeco-etl-mensual configured` |
+| UID, fecha de creación y `generation`, antes y después | Idénticos: no se recreó ningún objeto ni cambió ningún `spec` |
+| Seguimiento | Anotación `argocd.argoproj.io/tracking-id: agroeco-etl:batch/CronJob:agroeco/agroeco-etl-mensual`; la etiqueta `app.kubernetes.io/instance` del chart no cambia |
+| Aviso en la primera sincronización | `missing the kubectl.kubernetes.io/last-applied-configuration annotation`: rastro esperado de la migración desde Helm ([TS-07](docs/TROUBLESHOOTING.md#ts-07--aviso-de-last-applied-configuration-en-la-primera-sincronización-de-argocd)) |
+
+**Retirada de la release de Helm.** Con la Application ya `Synced`, se
+borraron los Secrets `sh.helm.release.v1.agroeco-etl.v1` y `.v2`. Si se
+hubieran quedado, un `helm uninstall` borraría el CronJob por detrás de
+ArgoCD. Después, `helm list -n agroeco` sale vacío, el ConfigMap (8 claves)
+y el CronJob siguen en el clúster y la Application sigue `Synced`/`Healthy`.
+
+**Observaciones.**
+- **Tres ReplicaSets de `argocd-server` en lugar de dos.** Son
+  `64756d7f98` (instalación, 21:08:03Z), `5bc6f9b5b6` (21:17:31Z) y
+  `6894d867f7` (21:18:55Z). La causa es que el `rollout restart` de la
+  prueba de Pod Security se ejecutó dos veces, con 84 s de diferencia. Hay
+  tres datos que lo confirman y descartan cualquier otro cambio:
+  - Entre las dos plantillas solo cambian `restartedAt` y
+    `pod-template-hash`.
+  - `managedFields` registra a `kubectl-rollout` a las 21:18:55Z, la misma
+    hora que el tercer ReplicaSet.
+  - `collisionCount` está vacío.
+- **Pods de ArgoCD recreados al parar el clúster.** Al día siguiente, los
+  pods de ArgoCD tenían nombres nuevos, 0 reinicios y una fecha de creación
+  de las 00:44:15Z, la hora del `k3d cluster stop`. Todos estaban en
+  `k3d-agroeco-agent-1`. Ese nodo no tenía la imagen de Redis, así que al
+  arrancar de nuevo tuvo que descargarla, y el pod estuvo unos minutos en
+  `ContainerCreating`. ArgoCD no tiene datos propios en volúmenes: su
+  estado está en Git, en la API de Kubernetes y en la caché de Redis, así
+  que no se perdió nada.
+- **Acceso a la interfaz.** El primer inicio de sesión falló con un mensaje
+  que mencionaba CORS, pero la causa era el túnel del `port-forward`
+  ([TS-08](docs/TROUBLESHOOTING.md#ts-08--la-interfaz-de-argocd-da-request-has-been-terminated-al-iniciar-sesión)).
+
+Captura: `20_argocd_adopcion.png` (Application `Synced` y `Healthy` en el
+commit `1f9a403`, con el ConfigMap y el CronJob adoptados).
+
 ## Tareas pendientes
 
 | Fase | Tarea | Motivo |
 |------|-------|--------|
 | 2 | Actualizar cert-manager a la serie 1.22 cuando se publique | La v1.21.3 no incluye Kubernetes 1.37 en su matriz de soporte (ver Decisiones técnicas). |
 | 4 | Añadir mensajes DEBUG al ETL: URL y tamaño de cada descarga, y filas antes y después de cada limpieza | Hoy `ETL_NIVEL_LOG=DEBUG` no muestra nada más que `INFO` ([TS-06](docs/TROUBLESHOOTING.md#ts-06--el-nivel-debug-de-dev-no-muestra-nada-más-que-prod)). El cambio llega con la imagen que construya GitHub Actions y una nueva `appVersion` del chart. |
-| 4 | Decidir cómo se ejecuta la carga inicial con ArgoCD | ArgoCD convierte el hook `post-install` en `PostSync` y lo ejecutaría en cada sincronización, no solo al instalar. |
+
 ## Mejoras posibles
+
+- **Server-Side Apply en ArgoCD** (`ServerSideApply=true`). El servidor
+  aplica los cambios y registra quién gestiona cada campo, sin la anotación
+  `last-applied-configuration`, y la comparación también se hace en el
+  servidor. Antes de activarlo hay que retirar de `managedFields` las
+  entradas del gestor `helm`. Helm 4 aplicó con *server-side apply* y sigue
+  figurando como dueño de los campos, así que un campo que se quitara del
+  chart no se borraría
+  ([TS-07](docs/TROUBLESHOOTING.md#ts-07--aviso-de-last-applied-configuration-en-la-primera-sincronización-de-argocd)).
 
 - **Cierre ordenado ante `SIGTERM`.** Instalar en `main.py` un manejador de
   `SIGTERM` que interrumpa el pipeline con una excepción controlada: la

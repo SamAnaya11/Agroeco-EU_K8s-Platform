@@ -1,7 +1,9 @@
 # Imagen del ETL Agroeco-EU (Eurostat -> pandas -> PostgreSQL)
 #
-# Construcción (desde la raíz del repositorio):
-#   docker build -t agroeco-etl:0.1.0 etl/
+# La construye y publica GitHub Actions (.github/workflows/ci.yaml) en
+# ghcr.io con la versión de appVersion (charts/agroeco-etl/Chart.yaml).
+# Construcción local (desde la raíz del repositorio):
+#   docker build --build-arg ETL_VERSION=0.2.0 -t agroeco-etl:0.2.0 etl/
 
 # Base ligera y con versión fijada: Debian 13 (trixie) mínima con Python 3.14
 FROM python:3.14.10-slim-trixie
@@ -35,5 +37,10 @@ RUN mkdir /datos && chown etl:etl /datos
 ENV ETL_DIR_DATOS=/datos
 
 USER 10001:10001
+
+# Versión del ETL, visible en la primera línea del log. Va al final para que
+# cambiarla no invalide la caché de las capas anteriores (dependencias de pip).
+ARG ETL_VERSION=desconocida
+ENV ETL_VERSION=${ETL_VERSION}
 
 ENTRYPOINT ["python", "main.py"]
