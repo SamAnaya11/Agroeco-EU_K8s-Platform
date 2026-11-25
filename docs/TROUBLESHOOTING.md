@@ -17,6 +17,7 @@ solución aplicada y cómo evitar que se repita.
 | [TS-07](#ts-07--aviso-de-last-applied-configuration-en-la-primera-sincronización-de-argocd) | 4 | Aviso de `last-applied-configuration` en la primera sincronización de ArgoCD |
 | [TS-08](#ts-08--la-interfaz-de-argocd-da-request-has-been-terminated-al-iniciar-sesión) | 4 | La interfaz de ArgoCD da «Request has been terminated» al iniciar sesión |
 | [TS-09](#ts-09--el-ci-falla-en-la-imagen-publicada-es-la-probada) | 4 | El CI falla en «La imagen publicada es la probada» |
+| [TS-10](#ts-10--gh-run-view---web-no-abre-el-navegador-en-wsl) | 4 | `gh run view --web` no abre el navegador en WSL |
 
 ---
 
@@ -488,6 +489,37 @@ solución aplicada y cómo evitar que se repita.
   digest y, si pasa, añadir la etiqueta de versión al mismo digest sin
   reconstruir. La 0.2.0, publicada sin verificar, no la reutilicé:
   saqué la 0.2.1.»
+
+---
+
+## TS-10 · `gh run view --web` no abre el navegador en WSL
+
+- **Fase:** 4 – GitOps y CI/CD (paso 4.4, revisión de la ejecución del CI
+  desde la terminal Ubuntu 1).
+- **Síntoma:** `gh run view <id> --web` muestra la URL de la ejecución, pero
+  no abre nada y termina con:
+
+  ```
+  exec: "xdg-open,x-www-browser,www-browser,wslview": executable file not found in $PATH
+  ```
+- **Causa:** Ubuntu en WSL no tiene navegador ni ningún programa que abra
+  enlaces (`xdg-open`, `wslview`…). gh busca uno de Linux y no sabe usar,
+  por sí solo, el navegador de Windows.
+- **Solución:** abrir a mano en el navegador de Windows la URL que gh ya
+  muestra. Para que funcione siempre, se le indica a gh que use el abridor
+  de Windows:
+
+  ```bash
+  echo 'export BROWSER="explorer.exe"' >> ~/.bashrc
+  source ~/.bashrc
+  ```
+- **Prevención:** en WSL, definir `BROWSER` al instalar herramientas que
+  abren el navegador (gh, az login). El error no afecta al resultado: el
+  comando ya ha hecho su trabajo y solo falla la apertura.
+- **Frase para entrevista:** «Desde WSL, `gh run view --web` me daba la URL
+  pero fallaba al abrirla: Ubuntu en WSL no tiene navegador y gh buscaba
+  `xdg-open`. Lo resolví con `BROWSER=explorer.exe`, que hace que el enlace
+  se abra en el navegador de Windows.»
 
 ---
 

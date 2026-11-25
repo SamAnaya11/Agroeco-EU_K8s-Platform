@@ -5,7 +5,7 @@ Migración del pipeline ETL de agricultura ecológica de la UE
 serverless en Azure) a una plataforma Kubernetes con PostgreSQL gestionado
 por operador, empaquetado con Helm, despliegue GitOps y CI/CD.
 
-> Estado: en construcción (Fase 4 en curso: repositorio en GitHub y ArgoCD sincronizando el chart desde Git; siguientes: Experimento E y CI/CD con GitHub Actions).
+> Estado: en construcción (Fases 0-4 completadas: GitOps con ArgoCD y CI/CD con GitHub Actions, con el ETL 0.2.1 en prod fijado por digest; siguiente: Fase 5, observabilidad, opcional).
 
 ## Qué hace
 
@@ -60,7 +60,7 @@ _(Se completará con las versiones exactas verificadas en cada fase.)_
 | Kubernetes local | k3d / k3s | 5.9.0 / v1.37.2+k3s1 |
 | Cliente Kubernetes | kubectl | v1.37.2 |
 | Paquetes | Helm | v4.3.2 |
-| Despliegue del ETL | Chart propio [`charts/agroeco-etl`](charts/agroeco-etl) | 0.2.1 (ETL 0.2.1; prod sigue con la imagen 0.1.0 hasta la promoción) |
+| Despliegue del ETL | Chart propio [`charts/agroeco-etl`](charts/agroeco-etl) | Chart 0.2.1; ETL 0.2.1 en prod (`ghcr.io/samanaya11/agroeco-etl:0.2.1`, fijado por digest) |
 | Operador de base de datos | CloudNativePG (chart `cloudnative-pg`) | 1.30.2 (chart 0.29.2) |
 | Base de datos | PostgreSQL (`ghcr.io/cloudnative-pg/postgresql:18.7-minimal-trixie`) | 18.7 |
 | CLI de base de datos | Plugin `kubectl cnpg` | 1.30.2 |
@@ -273,7 +273,7 @@ Capturas: `13a_consulta_datos.png` (recuentos, vista y réplica) y
 | B | Job/CronJob frente a Deployment | ✅ Como Deployment, el ETL termina bien (código 0) y aun así se reinicia en bucle (`CrashLoopBackOff`) |
 | C | Failover de PostgreSQL | ✅ La réplica pasa a primaria 5,7 s después de borrar la primaria; el cliente vuelve a leer los mismos datos sin cambiar su configuración |
 | D | Mismo chart, distintos entornos | ✅ Un solo chart y una sola imagen generan dos entornos: prod carga en PostgreSQL con `verify-full` cada mes; dev solo extrae y limpia, con el CronJob suspendido y menos memoria reservada, sin base de datos ni Secrets |
-| E | GitOps: corrección de drift y despliegue desde Git | (1) ✅ ArgoCD revierte un cambio manual del CronJob en 2,0 s, con una sincronización parcial automática; los campos que Git no define no se vigilan · (2) _pendiente_ |
+| E | GitOps: corrección de drift y despliegue desde Git | (1) ✅ ArgoCD revierte un cambio manual del CronJob en 2,0 s, con una sincronización parcial automática; los campos que Git no define no se vigilan · (2) ✅ un commit en `values-prod.yaml` lleva a prod la imagen probada por el CI en 2 min 48,7 s, sin `kubectl` ni `helm` contra prod |
 | F | Alerta ante fallo del Job | _pendiente_ |
 | G | Limpieza completa | _pendiente_ |
 
@@ -597,10 +597,91 @@ por defecto, ArgoCD solo vigila los campos que define Git: un campo añadido
 que el chart no menciona no cuenta como diferencia. `selfHeal` protege lo
 declarado, pero no impide añadir cosas. Lo que deba estar prohibido se
 declara en Git o se impide con permisos (RBAC) o con políticas de admisión.
-La etiqueta se quitó a mano al terminar.
+
+**Limpieza.** La etiqueta se quitó a mano al terminar
+(`kubectl label cronjob agroeco-etl-mensual -n agroeco experimento-`). El CronJob quedó
+con `suspend: false` y `generation` 4, y la Application en
+`Synced`/`Healthy`.
 
 Captura: `21_exp_E_drift.png` (vigilancia con `false 2` → `true 3` →
 `false 4` y la operación automática de ArgoCD).
+
+#### E (2) · Promoción a prod por GitOps
+
+**Objetivo.** Comprobar que una imagen llega a prod solo con un commit en
+Git, sin `kubectl` ni `helm` contra el clúster, y que lo que se despliega es,
+bit a bit, lo que probó el CI.
+
+**Procedimiento.**
+- El bloque `image:` se copia tal cual del apartado «Promoción a prod» del
+  resumen de la ejecución del CI que probó la imagen (ejecución
+  `45667174486`, commit `fb222f7`): repositorio
+  `ghcr.io/samanaya11/agroeco-etl`, etiqueta `0.2.1` y digest del índice
+  `sha256:5c06ff2e…55338`.
+- Commit `40b97d8` «Promoción a prod: ETL 0.2.1 por etiqueta y digest», que
+  solo cambia [`values-prod.yaml`](charts/agroeco-etl/values-prod.yaml), y
+  push a `main`.
+- Una terminal vigila el CronJob con la hora de cada cambio (imagen,
+  `app.kubernetes.io/version` y `generation`).
+
+**Cronología** (UTC, 25-11-2026):
+
+| Hora | Δ | Qué ocurre | Fuente |
+|------|---|------------|--------|
+| 21:11:08,947 | — | CronJob con `agroeco-etl:0.1.0`, versión 0.1.0, `generation` 6 | vigilancia |
+| 21:13:14,816 | 0 s | `git push` del commit de promoción `40b97d8` | terminal |
+| **21:16:03,516** | **+2 min 48,7 s** | **CronJob con `ghcr.io/samanaya11/agroeco-etl:0.2.1@sha256:5c06ff2e…55338`, versión 0.2.1, `generation` 7** | vigilancia |
+
+La Application quedó en `40b97d8`, `Synced`/`Healthy`, con
+`initiatedBy: {"automated":true}`. Nadie ejecutó `kubectl` ni `helm` contra
+prod para el cambio. La latencia cae dentro del ciclo de consulta de ArgoCD
+a Git (unos 3 min). A diferencia del drift del E (1), que ArgoCD detecta al
+momento porque vigila los objetos del clúster, un commit nuevo solo se ve
+al consultar el repositorio. Un webhook de GitHub la bajaría a segundos (ver
+Tareas pendientes).
+
+**Comprobación en prod.** Ejecución manual desde el CronJob:
+`kubectl create job --from=cronjob/agroeco-etl-mensual etl-promocion-021`.
+- **Job** `Complete`, `1/1`, duración 88 s.
+- **`imageID` del pod:**
+  `ghcr.io/samanaya11/agroeco-etl@sha256:5c06ff2e…55338`. El nodo descargó
+  el digest probado, sin token.
+- **Log:** primera línea `agroeco-etl 0.2.1` y
+  `Pipeline terminado correctamente`.
+- **Filas cargadas en PostgreSQL:**
+
+  | Tabla | Filas |
+  |-------|------:|
+  | `dim_pais` | 28 |
+  | `dim_cultivo` | 17 |
+  | `fact_superficie` | 13.529 |
+  | `fact_pct_sau` | 620 |
+  | `fact_operadores` | 2.015 |
+  | `fact_ganaderia` | 1.395 |
+
+  Son las mismas cifras que con la 0.1.0 y que en la prueba local: el
+  código nuevo solo añade mensajes y no cambia los datos.
+- **0 líneas `DEBUG`**, porque prod usa `nivelLog: INFO`.
+- **9 s de ETL frente a 88 s de Job.** El ETL empezó a las 21:26:35 y
+  terminó a las 21:26:44. Los unos 79 s restantes fueron la primera
+  descarga de la imagen desde ghcr.io al nodo. Las ejecuciones siguientes
+  en ese nodo la encuentran ya descargada (`pullPolicy: IfNotPresent`).
+
+**Conclusión.**
+- **Lo probado es lo desplegado, bit a bit.** El digest de
+  `values-prod.yaml` es el que pasó la prueba de humo en el CI, y es el que
+  muestra el `imageID` del pod. Ni la etiqueta ni el registro pueden
+  cambiarlo.
+- **Trazabilidad en Git.** Qué versión hay en prod, quién la cambió y
+  cuándo está en el historial: un commit por promoción.
+- **Vuelta atrás con `git revert`** del commit de promoción. ArgoCD aplica
+  la versión anterior por el mismo camino.
+
+Capturas: `24a_exp_E_promocion.png` (vigilancia del CronJob: de
+`agroeco-etl:0.1.0`, `generation` 6, a `ghcr.io/…:0.2.1@sha256:5c06…`,
+`generation` 7, a las 21:16:03,516) y `24b_exp_E_promocion.png` (commit
+`40b97d8`, Application `Synced`/`Healthy`, Job `Complete`, `imageID`, log
+y 0 líneas `DEBUG`).
 
 ## Backup y restauración
 
@@ -852,12 +933,45 @@ una imagen que ya ha pasado la prueba:
 > promueve nunca. Tampoco se reutiliza, porque las etiquetas son inmutables.
 > El mismo código se publica como **0.2.1** con el flujo actual.
 
+**Resultado de la ejecución `45667174486`** (commit `fb222f7`, 25-11-2026):
+- Los dos jobs, en verde. «¿Hay que construir la imagen?» dio `true` por el
+  cambio de `appVersion`.
+- El job de la imagen tardó **54 s**, con una sola construcción. El intento
+  fallido de `fe84e2f`, con dos construcciones, tardó 1 min 30 s.
+- Se publicó `ghcr.io/samanaya11/agroeco-etl` con las etiquetas `0.2.1` y
+  `sha-fb222f7`, sobre el digest del índice
+  `sha256:5c06ff2e7d0896f2fc0ae68c75213b87bf45ebf89efa4ac7f8d473973ec55338`.
+- Con el push de `fb222f7`, ArgoCD solo sincronizó la etiqueta del chart. El
+  CronJob pasó a `helm.sh/chart: agroeco-etl-0.2.1` y siguió con
+  `app.kubernetes.io/version: 0.1.0` y la imagen `agroeco-etl:0.1.0`. Subir
+  `appVersion` no cambia prod: eso lo hace la promoción del
+  [Experimento E (2)](#e-2--promoción-a-prod-por-gitops).
+
+**Comprobación pública sin credenciales.** Con el paquete ya público, se
+cerró la sesión (`docker logout ghcr.io`) y se ejecutó
+`docker buildx imagetools inspect ghcr.io/samanaya11/agroeco-etl:0.2.1`:
+- `MediaType: application/vnd.oci.image.index.v1+json` y
+  `Digest: sha256:5c06ff2e…55338`, el mismo del bloque de promoción.
+- Dentro del índice, el manifiesto `linux/amd64`
+  `sha256:d80ab4e6ad23a70c2389e510ac07e971c642bd14f5ac344782c6a3905784121b`.
+
+Ahí se ven los dos tipos de huella de
+[TS-09](docs/TROUBLESHOOTING.md#ts-09--el-ci-falla-en-la-imagen-publicada-es-la-probada):
+el digest del índice, que es el que se fija en prod, y el del manifiesto de
+la plataforma.
+
+Capturas: `22_github_actions.png` (ejecución con los dos jobs en verde y el
+resumen), `23a_ghcr_paquete.png` (paquete `Public`, descripción y
+repositorio enlazado) y `23b_ghcr_paquete.png` (versiones `0.2.1` con
+`sha-fb222f7` y `0.2.0` con `sha-fe84e2f`).
+
 ## Tareas pendientes
 
 | Fase | Tarea | Motivo |
 |------|-------|--------|
 | 2 | Actualizar cert-manager a la serie 1.22 cuando se publique | La v1.21.3 no incluye Kubernetes 1.37 en su matriz de soporte (ver Decisiones técnicas). |
-| 4 | Añadir mensajes DEBUG al ETL: URL y tamaño de cada descarga, y filas antes y después de cada limpieza | Hoy `ETL_NIVEL_LOG=DEBUG` no muestra nada más que `INFO` ([TS-06](docs/TROUBLESHOOTING.md#ts-06--el-nivel-debug-de-dev-no-muestra-nada-más-que-prod)). El cambio llega con la imagen que construya GitHub Actions y una nueva `appVersion` del chart. |
+| 4 | _(Opcional)_ Webhook de GitHub hacia ArgoCD | Con la consulta periódica, un commit tarda unos 3 min en llegar a prod (2 min 48,7 s en el Experimento E (2)). Con el webhook bajaría a segundos. Necesita exponer el servidor de ArgoCD a GitHub, algo que hoy no se hace: solo se accede por `kubectl port-forward`. |
+| 4 | _(Opcional)_ Borrar el Secret `argocd-initial-admin-secret` | Después de cambiar la contraseña de admin, ese Secret ya no sirve y solo guarda una credencial en el clúster. |
 
 ## Mejoras posibles
 
