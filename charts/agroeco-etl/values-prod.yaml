@@ -8,13 +8,14 @@
 #   helm install agroeco-etl charts/agroeco-etl -n agroeco \
 #     -f charts/agroeco-etl/values-prod.yaml --timeout 10m
 
-# Imagen de prod, siempre explícita: subir appVersion en Chart.yaml no cambia
-# prod. Se cambia solo con un commit de promoción (repositorio, etiqueta y
-# digest del resumen del workflow), y ArgoCD lo despliega.
+# Imagen de prod, fijada por etiqueta y digest: subir appVersion en Chart.yaml
+# no cambia prod. El valor sale del bloque "Promoción a prod" del resumen de
+# la ejecución del CI que probó esa imagen (commit fb222f7). Cambiarla es un
+# commit de promoción que aplica ArgoCD; volver atrás, un git revert de ese commit.
 image:
-  repository: agroeco-etl
-  tag: "0.1.0"
-  digest: ""
+  repository: ghcr.io/samanaya11/agroeco-etl
+  tag: "0.2.1"
+  digest: "sha256:5c06ff2e7d0896f2fc0ae68c75213b87bf45ebf89efa4ac7f8d473973ec55338"
 
 etl:
   nivelLog: INFO
