@@ -25,7 +25,7 @@ probada y devuelve los mismos datos.
 ```mermaid
 flowchart LR
     dev[Desarrollador] -->|push a main| repo[(Repositorio GitHub<br/>código + chart Helm)]
-    repo -->|cambios del ETL| gha[GitHub Actions<br/>lint + build + push]
+    repo -->|cambios del ETL| gha[GitHub Actions<br/>lint · build · prueba por digest · etiqueta]
     gha --> ghcr[(ghcr.io<br/>imagen inmutable)]
     dev -.->|commit de promoción<br/>etiqueta + digest| repo
 
@@ -60,7 +60,7 @@ _(Se completará con las versiones exactas verificadas en cada fase.)_
 | Kubernetes local | k3d / k3s | 5.9.0 / v1.37.2+k3s1 |
 | Cliente Kubernetes | kubectl | v1.37.2 |
 | Paquetes | Helm | v4.3.2 |
-| Despliegue del ETL | Chart propio [`charts/agroeco-etl`](charts/agroeco-etl) | 0.1.0 (ETL 0.1.0) |
+| Despliegue del ETL | Chart propio [`charts/agroeco-etl`](charts/agroeco-etl) | 0.2.1 (ETL 0.2.1; prod sigue con la imagen 0.1.0 hasta la promoción) |
 | Operador de base de datos | CloudNativePG (chart `cloudnative-pg`) | 1.30.2 (chart 0.29.2) |
 | Base de datos | PostgreSQL (`ghcr.io/cloudnative-pg/postgresql:18.7-minimal-trixie`) | 18.7 |
 | CLI de base de datos | Plugin `kubectl cnpg` | 1.30.2 |
@@ -68,7 +68,7 @@ _(Se completará con las versiones exactas verificadas en cada fase.)_
 | Backup de PostgreSQL | Barman Cloud Plugin (chart `plugin-barman-cloud`) | v0.16.0 (chart 0.9.0) |
 | Almacenamiento S3 para backups | Garage (`dxflrs/garage`), un solo nodo | v2.5.0 |
 | GitOps | Argo CD (chart oficial `argo-cd`) | v3.6.3 (chart 10.19.1) |
-| CI/CD | GitHub Actions + ghcr.io | — |
+| CI/CD | GitHub Actions ([`.github/workflows/ci.yaml`](.github/workflows/ci.yaml)) + ghcr.io | Actions fijadas por SHA: `checkout` v7.0.1, `setup-buildx-action` v4.4.1, `login-action` v4.8.0, `metadata-action` v6.2.0, `build-push-action` v7.4.0, `setup-helm` v5.1.0 (Helm v4.3.2) |
 | CLI de GitHub | `gh` (repositorio APT oficial, clave `7F38BBB5…62313325` verificada) | 2.105.0 |
 
 ## Decisiones técnicas
@@ -798,6 +798,59 @@ y el CronJob siguen en el clúster y la Application sigue `Synced`/`Healthy`.
 
 Captura: `20_argocd_adopcion.png` (Application `Synced` y `Healthy` en el
 commit `1f9a403`, con el ConfigMap y el CronJob adoptados).
+
+## Integración continua con GitHub Actions
+
+El workflow [`.github/workflows/ci.yaml`](.github/workflows/ci.yaml) se
+lanza con cada push a `main` que toque `etl/`, el chart o el propio
+workflow, y también a mano. No despliega nada: publica la imagen y da el
+bloque exacto para promocionarla. El despliegue es un commit en
+`values-prod.yaml` que aplica ArgoCD.
+
+**1. Validar chart.** `helm lint --strict` con los valores por defecto, dev
+y prod, con Helm v4.3.2, la misma versión que en WSL. Después decide si hay
+que construir la imagen: solo si cambia `etl/` o la línea `appVersion` de
+`Chart.yaml`, o si se lanza a mano.
+
+**2. Imagen del ETL.** La etiqueta de versión solo llega a existir sobre
+una imagen que ya ha pasado la prueba:
+
+1. **Inmutabilidad.** Si la etiqueta de `appVersion` ya existe en ghcr.io,
+   el job falla. ghcr.io no impide reescribir etiquetas: lo impone el CI.
+2. **Una sola construcción**, publicada solo como `sha-<commit>`, con
+   atestación de procedencia y SBOM. El paso devuelve el digest del índice
+   publicado.
+3. **Prueba de humo sobre lo publicado.** Se descarga
+   `ghcr.io/samanaya11/agroeco-etl@<digest>` del registro y se ejecuta el ETL
+   real con las restricciones de Kubernetes (raíz de solo lectura, usuario
+   10001, carpetas temporales), sin base de datos y con
+   `ETL_NIVEL_LOG=DEBUG`. La prueba exige tres cosas: la versión en la
+   primera línea del log, `Pipeline terminado correctamente` y al menos una
+   línea `DEBUG`.
+4. **Etiqueta de versión sin reconstruir.** `docker buildx imagetools create`
+   añade la etiqueta de `appVersion` al mismo digest, y
+   `imagetools inspect` comprueba que apunta exactamente a él.
+5. **Resumen de la ejecución:** la imagen, las dos etiquetas, el digest
+   probado y el bloque `image:` para `values-prod.yaml`.
+
+**Seguridad del workflow:**
+- Ningún permiso por defecto. Solo el job de la imagen tiene
+  `packages: write`, con el `GITHUB_TOKEN` automático y sin tokens
+  personales.
+- Las actions van fijadas por SHA de commit, y se comprobaron con
+  `gh api repos/<action>/commits/<tag>`.
+- El checkout se hace con `persist-credentials: false`.
+- Los datos de GitHub llegan a los scripts como variables de entorno, nunca
+  interpolados en el código.
+
+> **Nota sobre la versión 0.2.0.** La primera ejecución publicó
+> `ghcr.io/samanaya11/agroeco-etl:0.2.0` con un diseño anterior: probaba
+> una construcción y publicaba otra. El control final falló, porque
+> comparaba identificadores de distinto tipo
+> ([TS-09](docs/TROUBLESHOOTING.md#ts-09--el-ci-falla-en-la-imagen-publicada-es-la-probada)).
+> La etiqueta `0.2.0` sigue en ghcr.io, pero no se verificó y no se
+> promueve nunca. Tampoco se reutiliza, porque las etiquetas son inmutables.
+> El mismo código se publica como **0.2.1** con el flujo actual.
 
 ## Tareas pendientes
 

@@ -16,6 +16,7 @@ solución aplicada y cómo evitar que se repita.
 | [TS-06](#ts-06--el-nivel-debug-de-dev-no-muestra-nada-más-que-prod) | 3 | El nivel DEBUG de dev no muestra nada más que prod |
 | [TS-07](#ts-07--aviso-de-last-applied-configuration-en-la-primera-sincronización-de-argocd) | 4 | Aviso de `last-applied-configuration` en la primera sincronización de ArgoCD |
 | [TS-08](#ts-08--la-interfaz-de-argocd-da-request-has-been-terminated-al-iniciar-sesión) | 4 | La interfaz de ArgoCD da «Request has been terminated» al iniciar sesión |
+| [TS-09](#ts-09--el-ci-falla-en-la-imagen-publicada-es-la-probada) | 4 | El CI falla en «La imagen publicada es la probada» |
 
 ---
 
@@ -416,6 +417,77 @@ solución aplicada y cómo evitar que se repita.
   problema estaba en el `port-forward`, que ya no transmitía. Lo reabrí y
   entró a la primera. Ahora, antes de iniciar sesión, compruebo el túnel con
   un `curl` a `/healthz` y no le doy más vueltas a la interfaz.»
+
+---
+
+## TS-09 · El CI falla en «La imagen publicada es la probada»
+
+- **Fase:** 4 – GitOps y CI/CD (paso 4.4, primera ejecución del workflow
+  `.github/workflows/ci.yaml`, commit `fe84e2f`).
+- **Síntoma:** todos los pasos anteriores pasaron, incluidas la prueba de
+  humo y la publicación en ghcr.io con las etiquetas `0.2.0` y
+  `sha-<commit>`. El último control falló:
+
+  ```
+  PROBADA:   sha256:4baa09f79aa2afd14a30050eef5ad0ecf9c1afb6f86a655290d9fc839318a6b8
+  PUBLICADA: sha256:6a0aad3fe6874169edbc23ebe2f6e6bab973e0fb86c0454a665a1187387083a6
+  ##[error]La imagen publicada no es la misma que pasó la prueba
+  ```
+- **Causa:** la comparación mezclaba dos identificadores de tipo distinto:
+  era como comparar el DNI de una persona con su pasaporte. La imagen se
+  construía dos veces y se comparaba la salida `imageid` de cada
+  construcción:
+  - **Construcción para la prueba** (`load: true`): la imagen se cargaba
+    en el Docker del runner, que usa containerd como almacén. Ahí el ID de
+    la imagen es el digest de su manifiesto.
+  - **Construcción para publicar** (con procedencia y SBOM): el registro
+    guarda un índice OCI, que contiene la imagen y sus atestaciones, y el
+    `imageid` de esa construcción es otro tipo de digest.
+
+  Ninguno de los dos valores era el digest del índice publicado (la salida
+  `digest`). La comparación nunca podía coincidir, aunque las capas fueran
+  las mismas. El diseño tenía además un fallo de fondo: probaba una imagen
+  y publicaba otra construcción, y solo podía comprobar que eran iguales
+  después de haberla publicado con la etiqueta de versión.
+- **Solución:** se rediseñó el job «Imagen del ETL» para probar
+  exactamente lo publicado, sin comparar IDs:
+  1. Se comprueba que la etiqueta de `appVersion` no existe en ghcr.io
+     (inmutabilidad), como antes.
+  2. Se construye una sola vez y se publica solo como `sha-<commit>`, con
+     procedencia y SBOM. Se usa la salida `digest`: el digest del índice.
+  3. La prueba de humo, la misma que antes (nivel DEBUG, raíz de solo
+     lectura, usuario 10001), se ejecuta sobre
+     `ghcr.io/samanaya11/agroeco-etl@<digest>` descargada del registro.
+  4. Si pasa, la etiqueta de `appVersion` se añade a ese mismo digest sin
+     reconstruir (`docker buildx imagetools create -t … <imagen>@<digest>`).
+     Después, `docker buildx imagetools inspect` comprueba que la etiqueta
+     apunta exactamente a ese digest. Si no coincide, el job falla.
+  5. El resumen y el bloque de promoción usan ese digest.
+
+  Además, el job de la imagen se ejecuta también cuando cambia la línea
+  `appVersion` de `Chart.yaml`, no solo cuando cambia `etl/`.
+
+  La versión sube a **0.2.1** (chart 0.2.1): el mismo código, publicado con
+  el flujo verificado. La etiqueta `0.2.0` quedó publicada sin verificar.
+  No se borra ni se reutiliza (reescribirla rompería la inmutabilidad) y no
+  se promueve nunca.
+- **Prevención:**
+  - La etiqueta de versión solo se crea sobre un digest que ya ha pasado la
+    prueba, y siempre por digest, sin reconstruir.
+  - Antes de comparar dos identificadores, se comprueba qué es cada uno:
+    ID local, digest del manifiesto o digest del índice. Para saber «qué
+    hay publicado» se usa el digest del índice, que es el que guarda el
+    registro y el que se fija en `values-prod.yaml`.
+- **Frase para entrevista:** «Mi CI construía la imagen dos veces, una para
+  probarla y otra para publicarla, y comparaba sus IDs para asegurarse de
+  que eran la misma. Falló siempre. Uno era el ID local de containerd y el
+  otro venía de un índice OCI con atestaciones: comparaba un DNI con un
+  pasaporte. Pero el problema de fondo era el diseño: probaba una cosa y
+  publicaba otra. Lo cambié para construir una sola vez, publicar solo con
+  la etiqueta del commit, probar esa imagen descargada del registro por
+  digest y, si pasa, añadir la etiqueta de versión al mismo digest sin
+  reconstruir. La 0.2.0, publicada sin verificar, no la reutilicé:
+  saqué la 0.2.1.»
 
 ---
 

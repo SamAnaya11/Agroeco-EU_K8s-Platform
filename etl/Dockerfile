@@ -3,7 +3,7 @@
 # La construye y publica GitHub Actions (.github/workflows/ci.yaml) en
 # ghcr.io con la versión de appVersion (charts/agroeco-etl/Chart.yaml).
 # Construcción local (desde la raíz del repositorio):
-#   docker build --build-arg ETL_VERSION=0.2.0 -t agroeco-etl:0.2.0 etl/
+#   docker build --build-arg ETL_VERSION=0.2.1 -t agroeco-etl:0.2.1 etl/
 
 # Base ligera y con versión fijada: Debian 13 (trixie) mínima con Python 3.14
 FROM python:3.14.10-slim-trixie

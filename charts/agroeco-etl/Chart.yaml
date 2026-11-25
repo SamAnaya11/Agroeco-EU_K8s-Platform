@@ -11,12 +11,16 @@ type: application
 
 # Versión del chart: cambia cuando cambian las plantillas o los valores.
 # 0.2.0: imagen fijable por digest e image.tag en la etiqueta de versión.
-version: 0.2.0
+# 0.2.1: solo cambia appVersion.
+version: 0.2.1
 
 # Versión del ETL: etiqueta de imagen por defecto (values.yaml → image.tag).
 # GitHub Actions publica la imagen con esta etiqueta y falla si ya existe:
-# cada cambio en etl/ obliga a subirla. 0.2.0: mensajes DEBUG y versión en el log.
-appVersion: "0.2.0"
+# cada cambio en etl/ obliga a subirla.
+# 0.2.0: mensajes DEBUG y versión en el log. Publicada sin verificar y nunca
+#        promovida (TS-09); la etiqueta no se reutiliza.
+# 0.2.1: el mismo código, publicado con el flujo verificado del CI.
+appVersion: "0.2.1"
 
 # CronJob.spec.timeZone es estable desde 1.27; el chart se ha probado en 1.37.
 # El "-0" permite versiones con sufijo, como v1.37.2+k3s1.

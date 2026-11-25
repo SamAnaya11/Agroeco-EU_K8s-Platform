@@ -1,9 +1,14 @@
 # CI del proyecto Agroeco-EU K8s Platform.
 #
 #   1. Validar chart: helm lint --strict con los valores por defecto, dev y prod.
-#   2. Imagen del ETL (solo si cambia etl/ o se lanza a mano): construye,
-#      prueba de verdad y publica en ghcr.io con la versión de appVersion,
-#      que es inmutable: si la etiqueta ya existe, falla.
+#   2. Imagen del ETL (si cambia etl/ o appVersion, o se lanza a mano):
+#      a) la etiqueta de appVersion no debe existir en ghcr.io (inmutable);
+#      b) una sola construcción, publicada solo como sha-<commit>, con
+#         procedencia y SBOM;
+#      c) prueba de humo sobre esa imagen descargada del registro por digest;
+#      d) si pasa, la etiqueta de appVersion se añade al MISMO digest sin
+#         reconstruir, y se comprueba que apunta exactamente a él.
+#   Así la etiqueta de versión solo existe sobre una imagen probada.
 #
 # El despliegue NO se hace aquí: el resumen de la ejecución da el bloque para
 # values-prod.yaml, y el commit de promoción lo aplica ArgoCD (GitOps).
@@ -49,7 +54,7 @@ jobs:
     permissions:
       contents: read
     outputs:
-      etl: ${{ steps.cambios.outputs.etl }}
+      imagen: ${{ steps.cambios.outputs.imagen }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -69,27 +74,35 @@ jobs:
           helm lint --strict "$CHART" -f "$CHART/values-dev.yaml"
           helm lint --strict "$CHART" -f "$CHART/values-prod.yaml"
 
-      - name: ¿Cambia el ETL?
+      - name: ¿Hay que construir la imagen?
         id: cambios
         env:
           EVENTO: ${{ github.event_name }}
           ANTES: ${{ github.event.before }}
         run: |
-          # A mano, o sin un commit anterior válido (primer push): se construye
+          # Se construye si: se lanza a mano, no hay un commit anterior válido
+          # (primer push), cambia algo en etl/ o cambia la línea appVersion
+          # de Chart.yaml (una versión nueva necesita su imagen)
           if [ "$EVENTO" != "push" ] || ! git cat-file -e "${ANTES}^{commit}" 2>/dev/null; then
-            etl=true
-          elif git diff --quiet "$ANTES" "$GITHUB_SHA" -- etl/; then
-            etl=false
+            imagen=true
+            motivo="ejecución manual o primer push"
+          elif ! git diff --quiet "$ANTES" "$GITHUB_SHA" -- etl/; then
+            imagen=true
+            motivo="cambios en etl/"
+          elif git diff "$ANTES" "$GITHUB_SHA" -- "$CHART/Chart.yaml" | grep -qE '^[+-]appVersion:'; then
+            imagen=true
+            motivo="cambio de appVersion"
           else
-            etl=true
+            imagen=false
+            motivo="sin cambios en etl/ ni en appVersion"
           fi
-          echo "etl=$etl" >> "$GITHUB_OUTPUT"
-          echo "Cambios en etl/: $etl"
+          echo "imagen=$imagen" >> "$GITHUB_OUTPUT"
+          echo "Construir la imagen: $imagen ($motivo)"
 
   imagen:
     name: Imagen del ETL
     needs: validar
-    if: needs.validar.outputs.etl == 'true'
+    if: needs.validar.outputs.imagen == 'true'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -114,9 +127,6 @@ jobs:
           {
             echo "version=$version"
             echo "imagen=$imagen"
-            # Fecha del commit: compilación reproducible (misma fecha en las
-            # dos construcciones de este job)
-            echo "epoch=$(git log -1 --format=%ct)"
           } >> "$GITHUB_OUTPUT"
           echo "Imagen: $imagen:$version"
 
@@ -130,7 +140,7 @@ jobs:
       - name: Preparar Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - name: La etiqueta no existe todavía (inmutabilidad)
+      - name: La etiqueta de versión no existe todavía (inmutabilidad)
         env:
           IMAGEN: ${{ steps.version.outputs.imagen }}
           VERSION: ${{ steps.version.outputs.version }}
@@ -150,63 +160,23 @@ jobs:
           fi
           echo "$IMAGEN:$VERSION no existe: se puede publicar"
 
-      - name: Metadatos (etiquetas y labels OCI)
+      - name: Metadatos (etiqueta sha-<commit> y labels OCI)
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ${{ steps.version.outputs.imagen }}
-          # Versión del ETL y commit exacto (sha-<7 caracteres>)
+          # Solo el commit exacto: la etiqueta de versión se añade después,
+          # y únicamente si la prueba pasa
           tags: |
-            type=raw,value=${{ steps.version.outputs.version }}
             type=sha
           labels: |
             org.opencontainers.image.title=agroeco-etl
             org.opencontainers.image.description=ETL de agricultura ecológica de Eurostat a PostgreSQL
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
 
-      - name: Construir para la prueba
-        id: prueba
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        env:
-          SOURCE_DATE_EPOCH: ${{ steps.version.outputs.epoch }}
-        with:
-          context: etl
-          build-args: ETL_VERSION=${{ steps.version.outputs.version }}
-          labels: ${{ steps.meta.outputs.labels }}
-          tags: agroeco-etl:prueba
-          load: true
-          push: false
-          # La carga en Docker no admite atestaciones; se añaden al publicar
-          provenance: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Prueba de humo (extracción y limpieza reales, nivel DEBUG)
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          # Mismas restricciones que en Kubernetes: raíz de solo lectura,
-          # usuario 10001 y carpetas de escritura temporales. Sin base de datos.
-          docker run --rm --read-only --user 10001:10001 \
-            --mount type=tmpfs,destination=/datos,tmpfs-mode=1777 \
-            --mount type=tmpfs,destination=/tmp,tmpfs-mode=1777 \
-            -e ETL_CARGAR_BD=false -e ETL_NIVEL_LOG=DEBUG \
-            agroeco-etl:prueba | tee salida.log
-
-          grep -q "agroeco-etl $VERSION" salida.log \
-            || { echo "::error::El log no muestra la versión $VERSION"; exit 1; }
-          grep -q "Pipeline terminado correctamente" salida.log \
-            || { echo "::error::El pipeline no terminó correctamente"; exit 1; }
-          debug=$(grep -c " DEBUG " salida.log || true)
-          [ "$debug" -gt 0 ] \
-            || { echo "::error::Sin líneas DEBUG con ETL_NIVEL_LOG=DEBUG"; exit 1; }
-          echo "Prueba superada: $debug líneas DEBUG"
-
-      - name: Publicar en ghcr.io
+      - name: Construir y publicar como sha-<commit>
         id: publicar
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        env:
-          SOURCE_DATE_EPOCH: ${{ steps.version.outputs.epoch }}
         with:
           context: etl
           build-args: ETL_VERSION=${{ steps.version.outputs.version }}
@@ -217,16 +187,54 @@ jobs:
           provenance: mode=max
           sbom: true
           cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: La imagen publicada es la probada
+      - name: Prueba de humo sobre la imagen publicada (por digest, nivel DEBUG)
         env:
-          PROBADA: ${{ steps.prueba.outputs.imageid }}
-          PUBLICADA: ${{ steps.publicar.outputs.imageid }}
+          IMAGEN: ${{ steps.version.outputs.imagen }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DIGEST: ${{ steps.publicar.outputs.digest }}
         run: |
-          echo "ID de la imagen probada:   $PROBADA"
-          echo "ID de la imagen publicada: $PUBLICADA"
-          if [ -z "$PROBADA" ] || [ "$PROBADA" != "$PUBLICADA" ]; then
-            echo "::error::La imagen publicada no es la misma que pasó la prueba"
+          if ! [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::La publicación no devolvió un digest válido: '$DIGEST'"
+            exit 1
+          fi
+          referencia="$IMAGEN@$DIGEST"
+          # Se descarga del registro: se prueba exactamente lo publicado
+          docker pull "$referencia"
+
+          # Mismas restricciones que en Kubernetes: raíz de solo lectura,
+          # usuario 10001 y carpetas de escritura temporales. Sin base de datos.
+          docker run --rm --read-only --user 10001:10001 \
+            --mount type=tmpfs,destination=/datos,tmpfs-mode=1777 \
+            --mount type=tmpfs,destination=/tmp,tmpfs-mode=1777 \
+            -e ETL_CARGAR_BD=false -e ETL_NIVEL_LOG=DEBUG \
+            "$referencia" | tee salida.log
+
+          grep -q "agroeco-etl $VERSION" salida.log \
+            || { echo "::error::El log no muestra la versión $VERSION"; exit 1; }
+          grep -q "Pipeline terminado correctamente" salida.log \
+            || { echo "::error::El pipeline no terminó correctamente"; exit 1; }
+          debug=$(grep -c " DEBUG " salida.log || true)
+          [ "$debug" -gt 0 ] \
+            || { echo "::error::Sin líneas DEBUG con ETL_NIVEL_LOG=DEBUG"; exit 1; }
+          echo "Prueba superada sobre $referencia: $debug líneas DEBUG"
+
+      - name: Añadir la etiqueta de versión al mismo digest (sin reconstruir)
+        env:
+          IMAGEN: ${{ steps.version.outputs.imagen }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DIGEST: ${{ steps.publicar.outputs.digest }}
+        run: |
+          # Copia la referencia en el registro: ninguna capa se reconstruye
+          docker buildx imagetools create -t "$IMAGEN:$VERSION" "$IMAGEN@$DIGEST"
+
+          # La etiqueta tiene que apuntar exactamente al digest probado
+          apunta=$(docker buildx imagetools inspect "$IMAGEN:$VERSION" --format '{{.Manifest.Digest}}')
+          echo "Digest probado:            $DIGEST"
+          echo "$IMAGEN:$VERSION apunta a: $apunta"
+          if [ "$apunta" != "$DIGEST" ]; then
+            echo "::error::$IMAGEN:$VERSION no apunta al digest probado"
             exit 1
           fi
 
@@ -237,14 +245,16 @@ jobs:
           DIGEST: ${{ steps.publicar.outputs.digest }}
           ETIQUETAS: ${{ steps.meta.outputs.tags }}
         run: |
+          # Única etiqueta de metadata-action: <imagen>:sha-<commit>
+          etiqueta_sha=$(tr -d '[:space:]' <<< "${ETIQUETAS##*:}")
           {
             echo "## Imagen publicada"
             echo
             echo "| Dato | Valor |"
             echo "|------|-------|"
             echo "| Imagen | \`$IMAGEN\` |"
-            echo "| Etiquetas | $(sed 's/.*:/`/; s/$/`/' <<< "$ETIQUETAS" | paste -sd ' ' -) |"
-            echo "| Digest | \`$DIGEST\` |"
+            echo "| Etiquetas | \`$VERSION\` \`$etiqueta_sha\` |"
+            echo "| Digest (probado) | \`$DIGEST\` |"
             echo
             echo "## Promoción a prod"
             echo
