@@ -1,0 +1,36 @@
+# Métricas de PostgreSQL (Fase 5): PodMonitor del clúster agroeco-pg.
+# Uso: kubectl apply -f k8s/09-podmonitor-cnpg.yaml
+#      (después de instalar kube-prometheus-stack, que crea el CRD PodMonitor)
+#
+# Cada instancia de CloudNativePG publica sus métricas en el puerto "metrics"
+# (9187) del pod. Este PodMonitor le dice a Prometheus que las lea de los
+# pods del clúster agroeco-pg: la primaria y la réplica.
+#
+# Se crea a mano, como recomienda la documentación de CloudNativePG 1.30:
+# el campo .spec.monitoring.enablePodMonitor del Cluster está obsoleto y se
+# retirará. Así el PodMonitor es nuestro y el operador no lo sobrescribe.
+#
+# Va en el namespace agroeco, junto al clúster: Prometheus lo encuentra
+# porque monitoring/values-kps.yaml le permite leer PodMonitor de cualquier
+# namespace. No lo gestiona ArgoCD: el AppProject solo admite ConfigMap,
+# CronJob y PrometheusRule.
+#
+# Sin TLS en el puerto de métricas: el Cluster no activa
+# .spec.monitoring.tls.enabled, así que el puerto sirve HTTP dentro del
+# clúster. Si se activara, habría que pasar a scheme https con la CA
+# agroeco-pg-ca y serverName agroeco-pg-rw (ver la documentación).
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: agroeco-pg
+  namespace: agroeco
+  labels:
+    app.kubernetes.io/name: agroeco-pg
+    app.kubernetes.io/part-of: agroeco-eu
+spec:
+  # Solo los pods de este Cluster (etiqueta que pone CloudNativePG)
+  selector:
+    matchLabels:
+      cnpg.io/cluster: agroeco-pg
+  podMetricsEndpoints:
+    - port: metrics

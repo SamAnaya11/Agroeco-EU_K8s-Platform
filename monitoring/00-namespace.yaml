@@ -1,0 +1,24 @@
+# Espacio de nombres de la observabilidad (Fase 5): Prometheus, Alertmanager,
+# Grafana, kube-state-metrics y node-exporter (chart kube-prometheus-stack).
+# Uso: kubectl apply -f monitoring/00-namespace.yaml   (antes del helm install)
+#
+# EXCEPCIÓN JUSTIFICADA Y ACOTADA: es el único namespace del proyecto con
+# enforce "privileged". node-exporter mide el propio nodo (CPU, memoria,
+# disco, red), y para eso necesita hostNetwork, hostPID y montar con hostPath
+# las carpetas /proc, /sys y / del nodo. El nivel "baseline" ya prohíbe las
+# tres cosas, así que ningún nivel inferior a "privileged" lo admite.
+#
+# audit y warn se quedan en "restricted": cualquier pod que no cumpla el nivel
+# más estricto genera un aviso al crearse y una entrada en la auditoría. Así
+# se ve si algo, además de node-exporter, se aprovecha de la excepción.
+# El resto de los componentes se configura como "restricted" en
+# monitoring/values-kps.yaml.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    app.kubernetes.io/part-of: agroeco-eu
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted

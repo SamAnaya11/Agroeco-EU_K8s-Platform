@@ -43,3 +43,8 @@ resources:
     memory: 512Mi
   limits:
     memory: 1Gi
+
+# Alerta AgroecoEtlJobFallido: la despliega ArgoCD junto al CronJob.
+# kube-prometheus-stack (y su CRD PrometheusRule) debe estar instalado antes.
+alertas:
+  enabled: true

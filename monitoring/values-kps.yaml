@@ -1,0 +1,241 @@
+# Valores de kube-prometheus-stack para el clúster k3d de Agroeco-EU (Fase 5).
+#
+# Chart: prometheus-community/kube-prometheus-stack 93.11.1 (versión fijada en
+# el helm upgrade --install). Trae Prometheus v3.16.0, Alertmanager v0.35.1,
+# Grafana 13.3.2 (chart 14.6.1), kube-state-metrics 2.20.0 y Prometheus
+# Operator v0.95.2, compilado con client-go v0.37.2, que corresponde a
+# Kubernetes 1.37.
+#
+# Uso:
+#   helm upgrade --install kps prometheus-community/kube-prometheus-stack \
+#     --version 93.11.1 -n monitoring -f monitoring/values-kps.yaml --wait --timeout 10m
+#
+# Configuración mínima para un clúster local (WSL con 10 GB de RAM): solo se
+# cambia lo que hace falta en k3d. El resto son los valores por defecto del
+# chart, que ya traen sus reglas y dashboards.
+
+# Nombres cortos: kps-prometheus, kps-alertmanager, kps-operator…, en lugar de
+# "kps-kube-prometheus-stack-…"
+fullnameOverride: kps
+
+# --- Componentes que k3s no expone por separado -----------------------------
+# En k3s, etcd (o SQLite), kube-controller-manager, kube-scheduler y
+# kube-proxy no son pods: van dentro del único proceso k3s de cada nodo, y
+# sus métricas no se publican en la dirección que espera el chart. Si se
+# dejaran activados, Prometheus no podría leerlos y saltarían alertas
+# TargetDown falsas. Al desactivarlos, el chart tampoco crea sus reglas
+# ni sus dashboards: las plantillas de esas reglas comprueban también este
+# "enabled".
+kubeEtcd:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+
+# --- Prometheus Operator -------------------------------------------------------
+# Su securityContext por defecto ya es restringido (usuario 65534, seccomp
+# RuntimeDefault, sin escalada, sin capabilities, raíz de solo lectura).
+# Se repite aquí para que el archivo documente lo que se despliega.
+prometheusOperator:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    fsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+# --- Prometheus -----------------------------------------------------------------
+prometheus:
+  prometheusSpec:
+    # Recoge ServiceMonitor, PodMonitor y PrometheusRule de CUALQUIER
+    # namespace, no solo los que llevan la etiqueta de esta release. Así ve el
+    # PodMonitor de PostgreSQL (namespace agroeco) y la PrometheusRule del
+    # chart del ETL, que despliega ArgoCD.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+
+    # Lo que ocurra antes primero: 3 días de datos o 1500 MB en disco. El
+    # tamaño deja margen dentro del PVC de 2Gi (unos 2147 MB) para el WAL y
+    # la compactación: si el disco se llenara, Prometheus dejaría de escribir.
+    retention: 3d
+    retentionSize: 1500MB
+
+    # Datos persistentes en un PVC de la StorageClass local-path de k3s: un
+    # reinicio del pod no borra las métricas.
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 2Gi
+
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        memory: 1536Mi
+
+    # Restringido a nivel de pod. El operador ya pone en cada contenedor
+    # (prometheus y config-reloader) allowPrivilegeEscalation false,
+    # readOnlyRootFilesystem true y drop ALL: no hace falta configurarlo.
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 2000
+      fsGroup: 2000
+      seccompProfile:
+        type: RuntimeDefault
+
+# --- Alertmanager ---------------------------------------------------------------
+alertmanager:
+  enabled: true
+  # Sin ningún destino externo: todas las alertas van al receptor "null", que
+  # no envía nada (ni correo, ni Slack, ni webhook). Las alertas se ven en la
+  # interfaz de Alertmanager y en su API (/api/v2/alerts), que basta para
+  # verificar el Experimento F. Las inhibiciones por defecto del chart se
+  # mantienen.
+  config:
+    route:
+      receiver: "null"
+      group_by: ["namespace", "alertname"]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      routes: []
+    receivers:
+      - name: "null"
+  alertmanagerSpec:
+    # Sin almacenamiento persistente: los silencios se perderían al
+    # reiniciar el pod, algo aceptable en local.
+    resources:
+      requests:
+        cpu: 25m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+    # Como en Prometheus, el operador ya restringe cada contenedor
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      runAsGroup: 2000
+      fsGroup: 2000
+      seccompProfile:
+        type: RuntimeDefault
+
+# --- Grafana ----------------------------------------------------------------------
+grafana:
+  # Sin contraseña en este archivo. Si no se indica ninguna, el chart genera
+  # una aleatoria de 40 caracteres en el Secret kps-grafana (clave
+  # admin-password) y la conserva en cada upgrade. Se lee con kubectl y nunca
+  # pasa por Git.
+  adminUser: admin
+
+  # Sin persistencia: los dashboards llegan como código (ConfigMaps) y la
+  # fuente de datos la crea el chart. Sin PVC tampoco hace falta el
+  # initContainer que cambia el propietario de la carpeta, que corre como root.
+  persistence:
+    enabled: false
+  initChownData:
+    enabled: false
+
+  # Sin el pod de "helm test" (imagen bats, un pod más que descargar)
+  testFramework:
+    enabled: false
+
+  # Sidecar de dashboards: carga como dashboard cualquier ConfigMap con la
+  # etiqueta grafana_dashboard: "1", de cualquier namespace
+  # (monitoring/dashboard-cnpg.yaml).
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+
+  # Restringido: el chart ya trae el usuario 472 sin root, y aquí se añade
+  # seccomp RuntimeDefault a nivel de pod. Los contenedores (grafana y
+  # sidecars) ya traen sin escalada, drop ALL y seccomp; grafana además usa
+  # raíz de solo lectura.
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 472
+    runAsGroup: 472
+    fsGroup: 472
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    privileged: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+    seccompProfile:
+      type: RuntimeDefault
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 384Mi
+
+# --- kube-state-metrics -----------------------------------------------------------
+# Traduce el estado de los objetos de Kubernetes a métricas. De aquí sale
+# kube_job_status_failed, la métrica de la alerta AgroecoEtlJobFallido.
+kube-state-metrics:
+  securityContext:
+    enabled: true
+    runAsNonRoot: true
+    runAsUser: 65534
+    runAsGroup: 65534
+    fsGroup: 65534
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
+
+# --- node-exporter ------------------------------------------------------------------
+# La única excepción al nivel restricted (ver monitoring/00-namespace.yaml):
+# necesita hostNetwork, hostPID y hostPath para leer las métricas del nodo.
+# Se deja el securityContext del chart y solo se limitan los recursos.
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      memory: 64Mi

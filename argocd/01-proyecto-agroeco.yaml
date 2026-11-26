@@ -26,13 +26,18 @@ spec:
   # vacía no permite ninguno
   clusterResourceWhitelist: []
 
-  # Solo los dos objetos que genera el chart con la carga inicial
-  # desactivada. Sin "Job": si se reactivara la carga inicial, ArgoCD la
-  # ejecutaría como PostSync en cada sincronización, y el proyecto lo impide.
+  # Solo los objetos que genera el chart con la carga inicial desactivada.
+  # Sin "Job": si se reactivara la carga inicial, ArgoCD la ejecutaría como
+  # PostSync en cada sincronización, y el proyecto lo impide.
   # Sin "Secret": las credenciales nunca vienen de Git.
   # Los Jobs que crea el CronJob los crea Kubernetes, no ArgoCD: no les afecta.
+  # PrometheusRule (Fase 5, chart 0.3.0): la alerta AgroecoEtlJobFallido.
+  # Solo ese tipo del grupo monitoring.coreos.com: ni ServiceMonitor ni
+  # PodMonitor, que el chart no genera.
   namespaceResourceWhitelist:
     - group: ""
       kind: ConfigMap
     - group: batch
       kind: CronJob
+    - group: monitoring.coreos.com
+      kind: PrometheusRule

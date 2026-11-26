@@ -1,0 +1,52 @@
+{{- /*
+Alertas del ETL para Prometheus (Fase 5). Solo con alertas.enabled=true.
+
+Necesita el CRD PrometheusRule (monitoring.coreos.com/v1), que instala
+kube-prometheus-stack: si se activa en un clúster sin ese CRD, la instalación
+falla. Prometheus la recoge porque monitoring/values-kps.yaml le permite leer
+reglas de cualquier namespace, no solo las de su propia release.
+*/ -}}
+{{- if .Values.alertas.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "agroeco-etl.fullname" . }}
+  labels:
+    {{- include "agroeco-etl.labels" . | nindent 4 }}
+spec:
+  groups:
+    - name: agroeco-etl
+      rules:
+        {{- /*
+        Por qué esta expresión:
+        - kube_job_status_failed (kube-state-metrics) cuenta los pods de cada
+          Job que han terminado en Failed. El ETL sale con código 1 ante
+          cualquier error, así que un pod fallido es un ETL que no terminó.
+        - Se mira el Job, no el pod ni el CronJob: cubre las ejecuciones del
+          CronJob y las manuales (kubectl create job --from=cronjob/…), y
+          sigue valiendo cuando el pod ya se ha borrado.
+        - Se filtra por el namespace de la release: la regla no avisa de
+          Jobs de otros proyectos.
+        - "> 0" y no "agotó backoffLimit": también avisa si un reintento
+          acabó bien, porque un fallo intermitente (Eurostat caído, la
+          primaria de PostgreSQL cambiando) también merece mirarse.
+        Consecuencia: la alerta sigue activa mientras exista el Job fallido.
+        Con un CronJob eso puede durar semanas, porque failedJobsHistoryLimit
+        conserva los Jobs fallidos. Se resuelve borrando el Job una vez
+        revisado, y borrarlo es la forma de darla por vista.
+
+        Por qué for: 1m: la condición tiene que cumplirse en las evaluaciones
+        de un minuto seguido (con el intervalo de 30 s del chart, al menos
+        tres). Así no salta por un dato suelto, por ejemplo al reiniciarse
+        kube-state-metrics, y para un ETL mensual un minuto de retraso no
+        importa.
+        */}}
+        - alert: AgroecoEtlJobFallido
+          expr: kube_job_status_failed{namespace="{{ .Release.Namespace }}"} > 0
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: {{`"El Job {{ $labels.job_name }} del ETL ha fallado en el namespace {{ $labels.namespace }}"`}}
+            description: {{`"El Job {{ $labels.job_name }} (namespace {{ $labels.namespace }}) tiene {{ $value }} pod(s) en estado Failed. Logs: kubectl logs -n {{ $labels.namespace }} job/{{ $labels.job_name }}"`}}
+{{- end }}

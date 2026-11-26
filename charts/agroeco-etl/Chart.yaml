@@ -12,7 +12,10 @@ type: application
 # Versión del chart: cambia cuando cambian las plantillas o los valores.
 # 0.2.0: imagen fijable por digest e image.tag en la etiqueta de versión.
 # 0.2.1: solo cambia appVersion.
-version: 0.2.1
+# 0.3.0: PrometheusRule opcional (alertas.enabled) con AgroecoEtlJobFallido.
+#        appVersion no cambia: el CI no construye imagen y prod sigue con la
+#        misma imagen fijada por digest.
+version: 0.3.0
 
 # Versión del ETL: etiqueta de imagen por defecto (values.yaml → image.tag).
 # GitHub Actions publica la imagen con esta etiqueta y falla si ya existe:

@@ -85,3 +85,9 @@ volumenes:
   # raw/ y processed/ de cada ejecución
   datos: 500Mi
   tmp: 100Mi
+
+alertas:
+  # true = crea la PrometheusRule con la alerta AgroecoEtlJobFallido
+  # (templates/prometheusrule.yaml). Exige el CRD de kube-prometheus-stack
+  # en el clúster, así que por defecto está desactivada.
+  enabled: false

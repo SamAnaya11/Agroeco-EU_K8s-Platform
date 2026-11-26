@@ -1,0 +1,100 @@
+# Experimento F (Fase 5): un Job del ETL que falla para disparar la alerta
+# AgroecoEtlJobFallido (PrometheusRule del chart, values-prod.yaml).
+#
+# FALLO ELEGIDO: ETL_CARGAR_BD="quizas", un error de configuración realista
+# (un valor mal escrito en el ConfigMap o en el entorno). El propio ETL lo
+# detecta al arrancar: pipeline.variable_booleana() solo acepta true/false
+# (y 1/0, yes/no, si/no), y ante cualquier otro valor lanza ValueError.
+# main.py la captura, escribe "El pipeline ha fallado" con la traza y sale
+# con código 1. Kubernetes marca el pod como Failed, y kube-state-metrics
+# pasa kube_job_status_failed a 1.
+#
+# Por qué este fallo y no otro:
+# - Falla en la primera línea del pipeline, antes de descargar nada de
+#   Eurostat y antes de conectar a PostgreSQL: no toca la base de datos ni
+#   usa red. Por eso el Job no lleva credenciales ni la CA.
+# - Es un error real del código de producción, no un interruptor de prueba.
+#   El ETL también tiene PRUEBA_ALERTA=1, heredado de la versión de Azure,
+#   que provoca el fallo a propósito y sirve de alternativa.
+# - No depende de servicios externos, así que el resultado es reproducible.
+#
+# Usa la imagen de prod fijada por digest (la misma de values-prod.yaml) y
+# el mismo securityContext que el CronJob del chart: es el ETL de prod con
+# una configuración errónea, y cumple el nivel restricted del namespace.
+#
+# No lo gestiona ArgoCD: no lleva su anotación de seguimiento, así que la
+# Application no lo ve ni lo borra (prune).
+#
+# Está en k8s/experimentos/ para que no se aplique por error con el resto.
+# Uso:    kubectl apply -f k8s/experimentos/f-job-fallido.yaml
+#         kubectl logs -n agroeco job/etl-experimento-f
+# Borrar: kubectl delete -f k8s/experimentos/f-job-fallido.yaml
+#         (si no, lo borra el TTL al cabo de 1 h, y la alerta se resuelve)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: etl-experimento-f
+  namespace: agroeco
+  labels:
+    app.kubernetes.io/name: etl-experimento-f
+    app.kubernetes.io/part-of: agroeco-eu
+    agroeco.eu/experimento: "F"
+spec:
+  # Sin reintentos: un solo pod fallido basta para la alerta, y el
+  # resultado es determinista (el error se repetiría igual)
+  backoffLimit: 0
+  # Se borra solo 1 h después de terminar
+  ttlSecondsAfterFinished: 3600
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: etl-experimento-f
+        app.kubernetes.io/part-of: agroeco-eu
+        agroeco.eu/experimento: "F"
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      # Igual que en el chart (templates/_helpers.tpl, agroeco-etl.jobSpec)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: etl
+          image: ghcr.io/samanaya11/agroeco-etl:0.2.1@sha256:5c06ff2e7d0896f2fc0ae68c75213b87bf45ebf89efa4ac7f8d473973ec55338
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: ETL_DIR_DATOS
+              value: /datos
+            - name: ETL_NIVEL_LOG
+              value: INFO
+            # El fallo controlado: valor no válido para un booleano
+            - name: ETL_CARGAR_BD
+              value: quizas
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: datos
+              mountPath: /datos
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: datos
+          emptyDir:
+            sizeLimit: 50Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 50Mi
