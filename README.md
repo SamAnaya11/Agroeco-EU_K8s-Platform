@@ -5,7 +5,7 @@ Migración del pipeline ETL de agricultura ecológica de la UE
 serverless en Azure) a una plataforma Kubernetes con PostgreSQL gestionado
 por operador, empaquetado con Helm, despliegue GitOps y CI/CD.
 
-> Estado: en construcción (Fases 0-4 completadas: GitOps con ArgoCD y CI/CD con GitHub Actions, con el ETL 0.2.1 en prod fijado por digest; siguiente: Fase 5, observabilidad, opcional).
+> Estado: en construcción (Fases 0-5 completadas: GitOps con ArgoCD, CI/CD con GitHub Actions y observabilidad con Prometheus, Alertmanager y Grafana; siguiente: cierre del proyecto con el Experimento G, limpieza).
 
 ## Qué hace
 
@@ -43,6 +43,13 @@ flowchart LR
             garage[(Garage S3<br/>bucket agroeco-backups)]
         end
         pg1 -->|WAL continuo +<br/>copias base| garage
+        subgraph nsm["namespace monitoring"]
+            prom[Prometheus] -->|alertas| am[Alertmanager]
+            graf[Grafana] -->|consultas| prom
+        end
+        prom -.->|métricas| pg1
+        prom -.->|métricas| pg2
+        prom -.->|estado de los Jobs<br/>kube-state-metrics| chart
     end
 
     chart -->|HTTPS| eurostat[API Eurostat]
@@ -60,7 +67,7 @@ _(Se completará con las versiones exactas verificadas en cada fase.)_
 | Kubernetes local | k3d / k3s | 5.9.0 / v1.37.2+k3s1 |
 | Cliente Kubernetes | kubectl | v1.37.2 |
 | Paquetes | Helm | v4.3.2 |
-| Despliegue del ETL | Chart propio [`charts/agroeco-etl`](charts/agroeco-etl) | Chart 0.2.1; ETL 0.2.1 en prod (`ghcr.io/samanaya11/agroeco-etl:0.2.1`, fijado por digest) |
+| Despliegue del ETL | Chart propio [`charts/agroeco-etl`](charts/agroeco-etl) | Chart 0.3.0 (con la alerta `AgroecoEtlJobFallido`); ETL 0.2.1 en prod (`ghcr.io/samanaya11/agroeco-etl:0.2.1`, fijado por digest) |
 | Operador de base de datos | CloudNativePG (chart `cloudnative-pg`) | 1.30.2 (chart 0.29.2) |
 | Base de datos | PostgreSQL (`ghcr.io/cloudnative-pg/postgresql:18.7-minimal-trixie`) | 18.7 |
 | CLI de base de datos | Plugin `kubectl cnpg` | 1.30.2 |
@@ -69,6 +76,7 @@ _(Se completará con las versiones exactas verificadas en cada fase.)_
 | Almacenamiento S3 para backups | Garage (`dxflrs/garage`), un solo nodo | v2.5.0 |
 | GitOps | Argo CD (chart oficial `argo-cd`) | v3.6.3 (chart 10.19.1) |
 | CI/CD | GitHub Actions ([`.github/workflows/ci.yaml`](.github/workflows/ci.yaml)) + ghcr.io | Actions fijadas por SHA: `checkout` v7.0.1, `setup-buildx-action` v4.4.1, `login-action` v4.8.0, `metadata-action` v6.2.0, `build-push-action` v7.4.0, `setup-helm` v5.1.0 (Helm v4.3.2) |
+| Observabilidad | kube-prometheus-stack (chart `prometheus-community/kube-prometheus-stack`) | 93.11.1: Prometheus v3.16.0, Alertmanager v0.35.1, Grafana 13.3.2, kube-state-metrics 2.20.0, Prometheus Operator v0.95.2 |
 | CLI de GitHub | `gh` (repositorio APT oficial, clave `7F38BBB5…62313325` verificada) | 2.105.0 |
 
 ## Decisiones técnicas
@@ -274,7 +282,7 @@ Capturas: `13a_consulta_datos.png` (recuentos, vista y réplica) y
 | C | Failover de PostgreSQL | ✅ La réplica pasa a primaria 5,7 s después de borrar la primaria; el cliente vuelve a leer los mismos datos sin cambiar su configuración |
 | D | Mismo chart, distintos entornos | ✅ Un solo chart y una sola imagen generan dos entornos: prod carga en PostgreSQL con `verify-full` cada mes; dev solo extrae y limpia, con el CronJob suspendido y menos memoria reservada, sin base de datos ni Secrets |
 | E | GitOps: corrección de drift y despliegue desde Git | (1) ✅ ArgoCD revierte un cambio manual del CronJob en 2,0 s, con una sincronización parcial automática; los campos que Git no define no se vigilan · (2) ✅ un commit en `values-prod.yaml` lleva a prod la imagen probada por el CI en 2 min 48,7 s, sin `kubectl` ni `helm` contra prod |
-| F | Alerta ante fallo del Job | _pendiente_ |
+| F | Alerta ante fallo del Job | ✅ Un Job fallido dispara `AgroecoEtlJobFallido` en Alertmanager en 1 min 49 s; al borrar el Job, la alerta se resuelve en 26 s |
 | G | Limpieza completa | _pendiente_ |
 
 ### A · Autocuración
@@ -683,6 +691,96 @@ Capturas: `24a_exp_E_promocion.png` (vigilancia del CronJob: de
 `40b97d8`, Application `Synced`/`Healthy`, Job `Complete`, `imageID`, log
 y 0 líneas `DEBUG`).
 
+### F · Alerta ante el fallo del Job
+
+**Objetivo.** Comprobar que un fallo del ETL llega a Alertmanager sin que
+nadie mire el clúster, medir cuánto tarda en dispararse la alerta y en
+resolverse, y ver que la alerta dice qué Job falló y cómo leer sus logs.
+
+**Procedimiento.**
+- Se aplica [`k8s/experimentos/f-job-fallido.yaml`](k8s/experimentos/f-job-fallido.yaml):
+  un Job con la imagen de prod, fijada por digest, y un error de
+  configuración realista, `ETL_CARGAR_BD=quizas`. El propio ETL lo detecta
+  al arrancar, antes de descargar nada o conectar a PostgreSQL, y sale con
+  código 1. Tiene `backoffLimit: 0`, así que no hay reintentos.
+- Una terminal consulta cada 5 s tres cosas: los pods fallidos del Job, el
+  estado de la regla en la API de Prometheus y las alertas activas en la
+  API v2 de Alertmanager.
+- Al final se borra el Job y se mide cuánto tarda en resolverse la alerta.
+
+**Estado de partida.** En `agroeco` no había ningún Job fallido: solo
+`agroeco-etl-manual-tls` y `etl-promocion-021`, los dos completados. La
+regla `AgroecoEtlJobFallido` estaba `inactive`, con salud `ok` (evaluada a
+las 16:02:40), y en Alertmanager no había ninguna alerta.
+
+**Cronología** (UTC, 26-11-2026; la vigilancia da una precisión de unos 5 s):
+
+| Hora | Δ | Qué ocurre | Fuente |
+|------|---|------------|--------|
+| 16:05:26 | 0 s | `kubectl apply -f k8s/experimentos/f-job-fallido.yaml` | terminal |
+| 16:05:38 | +12 s | El Job tiene 1 pod fallido | vigilancia (Job) |
+| 16:06:10 | +44 s | Regla en `pending` | API de Prometheus |
+| **16:07:15** | **+1 min 49 s** | **Regla en `firing` y 1 alerta en Alertmanager** | API de Prometheus y de Alertmanager |
+| 16:18:15 | 0 s | `kubectl delete -f k8s/experimentos/f-job-fallido.yaml` | terminal |
+| 16:18:36 | +21 s | La regla sigue en `firing` | API de Prometheus |
+| **16:18:41** | **+26 s** | **Regla en `inactive` y 0 alertas en Alertmanager** | API de Prometheus y de Alertmanager |
+
+**Qué explica cada tramo.**
+- **+12 s, hasta el pod fallido.** Es lo que tardan en crearse el pod y en
+  arrancar Python, que importa pandas antes de leer la configuración.
+  Después, el ETL falla al momento. El log muestra
+  `ValueError: Valor no válido para ETL_CARGAR_BD: 'quizas' (usa true o false)`,
+  lanzado desde `variable_booleana` en `pipeline.py`.
+- **32 s más, hasta `pending`.** kube-state-metrics ve el pod fallido casi
+  al instante, porque vigila la API. Prometheus lo recoge en su siguiente
+  lectura (intervalo de 30 s), y la regla lo ve en su siguiente evaluación
+  (otros 30 s). El peor caso sería de unos 60 s.
+- **65 s en `pending`, hasta `firing`.** Es el `for: 1m` de la regla. Con
+  evaluaciones cada 30 s, la condición se cumple en tres evaluaciones
+  seguidas, y la tercera la pasa a `firing`. Los 5 s que pasan del minuto
+  entran en la precisión de la vigilancia. En la misma evaluación,
+  Prometheus envía la alerta a Alertmanager.
+- **26 s hasta resolverse.** Para resolverse no hay `for`, porque la regla
+  no define `keep_firing_for`. Al borrar el Job desaparece su serie en
+  kube-state-metrics. Basta una lectura de Prometheus que ya no la
+  encuentre y una evaluación de la regla, como mucho unos 60 s.
+
+**Qué llegó a Alertmanager.**
+- **Etiquetas:** `alertname=AgroecoEtlJobFallido`,
+  `job_name=etl-experimento-f`, `namespace=agroeco` y `severity=warning`.
+- **`summary`:** «El Job etl-experimento-f del ETL ha fallado en el
+  namespace agroeco».
+- **`description`:** el número de pods fallidos y el comando para leer los
+  logs, `kubectl logs -n agroeco job/etl-experimento-f`.
+
+Al terminar, en `agroeco` solo quedaron los dos Jobs buenos.
+
+**Conclusión.**
+- **El fallo se detecta sin mirar el clúster.** La alerta llega en menos
+  de 2 min, y dice qué Job falló, dónde y cómo investigarlo. Para un ETL
+  mensual es más que suficiente, y el `for: 1m` evita avisos por un dato
+  suelto.
+- **La alerta va con el código.** La regla forma parte del chart y la
+  despliega ArgoCD, como el CronJob. Cambiarla es un commit, igual que
+  cambiar la imagen.
+- **Se resuelve sola en cuanto desaparece la causa**, sin intervención en
+  Prometheus ni en Alertmanager.
+
+**Limitación de diseño.** La expresión `kube_job_status_failed > 0` sigue
+activa mientras exista el Job fallido. En los Jobs del CronJob eso puede
+durar semanas, porque `failedJobsHistoryLimit: 3` los conserva. Borrar el
+Job equivale a darlo por revisado. Hay otro caso: con `backoffLimit: 2`, un
+Job cuyo reintento termina bien también mantiene la alerta, porque conserva
+el pod fallido. Una mejora posible es
+`kube_job_status_failed{namespace="agroeco"} > 0 unless on(namespace, job_name) kube_job_status_succeeded > 0`.
+Así, un fallo que se recupera en un reintento ya no dejaría la alerta
+activa (ver Tareas pendientes).
+
+Capturas: `26a_exp_F_cronologia.png` (T0, la cronología de `inactive` a
+`pending` y a `firing` con 1 alerta en Alertmanager, y el `ValueError` del
+log) y `26b_exp_F_alertmanager.png` (la alerta en la interfaz de
+Alertmanager, con sus etiquetas y sus anotaciones).
+
 ## Backup y restauración
 
 Sin un backup externo, la alta disponibilidad no protege frente a borrados
@@ -876,6 +974,13 @@ y el CronJob siguen en el clúster y la Application sigue `Synced`/`Healthy`.
 - **Acceso a la interfaz.** El primer inicio de sesión falló con un mensaje
   que mencionaba CORS, pero la causa era el túnel del `port-forward`
   ([TS-08](docs/TROUBLESHOOTING.md#ts-08--la-interfaz-de-argocd-da-request-has-been-terminated-al-iniciar-sesión)).
+- **Contraseña de admin.** El 26-11-2026 se cambió la contraseña inicial
+  desde la interfaz. La nueva es aleatoria (`openssl rand -base64 24`) y
+  está guardada en un gestor de contraseñas, nunca en Git
+  (`admin.passwordMtime` de `argocd-secret`: 2026-11-26T14:36:40Z). Después
+  se borró el Secret `argocd-initial-admin-secret`, que guardaba la
+  contraseña inicial en claro (`kubectl get` responde `NotFound`). En el
+  clúster solo queda el hash bcrypt, en `argocd-secret`.
 
 Captura: `20_argocd_adopcion.png` (Application `Synced` y `Healthy` en el
 commit `1f9a403`, con el ConfigMap y el CronJob adoptados).
@@ -965,13 +1070,130 @@ resumen), `23a_ghcr_paquete.png` (paquete `Public`, descripción y
 repositorio enlazado) y `23b_ghcr_paquete.png` (versiones `0.2.1` con
 `sha-fb222f7` y `0.2.0` con `sha-fe84e2f`).
 
+## Observabilidad (Fase 5)
+
+Desde la Fase 5, el clúster tiene métricas y alertas con
+**kube-prometheus-stack 93.11.1** (release `kps`, namespace `monitoring`,
+valores en [`monitoring/values-kps.yaml`](monitoring/values-kps.yaml)). El
+chart instala todo lo necesario:
+- **Prometheus Operator** y sus CRD (`PodMonitor`, `ServiceMonitor`,
+  `PrometheusRule`…), para que cada componente declare cómo se le mide y
+  qué alertas tiene.
+- **Prometheus**, que guarda las métricas y evalúa las reglas.
+- **Alertmanager**, que recibe y agrupa las alertas.
+- **Grafana**, con los dashboards.
+- **kube-state-metrics**, que traduce el estado de los objetos de
+  Kubernetes, como los Jobs, a métricas.
+- **node-exporter**, que mide cada nodo.
+
+El objetivo es que un ETL que falla avise sin que nadie mire el clúster
+(Experimento F) y que PostgreSQL tenga sus métricas en un dashboard.
+
+**Decisiones.**
+- **Namespace `privileged` solo por node-exporter**
+  ([`monitoring/00-namespace.yaml`](monitoring/00-namespace.yaml)).
+  node-exporter necesita `hostNetwork`, `hostPID` y `hostPath`, y el nivel
+  `baseline` ya los prohíbe. `warn` y `audit` siguen en `restricted`: cada
+  pod que no cumpla el nivel más estricto deja un aviso. El resto de los
+  componentes va restringido: sin root, sin escalada, sin capabilities y
+  con seccomp `RuntimeDefault`.
+- **Componentes de k3s desactivados.** En k3s, etcd, kube-controller-manager,
+  kube-scheduler y kube-proxy van dentro del proceso k3s y no publican sus
+  métricas donde las busca el chart. Activados, darían alertas
+  `TargetDown` falsas. Al desactivarlos, el chart tampoco crea sus reglas
+  ni sus dashboards.
+- **Retención acotada.** Las métricas se guardan 3 días o hasta 1500 MB, lo
+  que llegue antes, en un PVC de 2Gi (`local-path`). Así queda margen para
+  el WAL y la compactación, y el disco nunca se llena.
+- **Selectores de cualquier namespace.** Con los ajustes
+  `…SelectorNilUsesHelmValues: false`, Prometheus recoge `ServiceMonitor`,
+  `PodMonitor` y `PrometheusRule` de todo el clúster, no solo los de su
+  release. Así ve el PodMonitor de PostgreSQL y la regla del ETL, los dos
+  en `agroeco`.
+- **Grafana sin contraseña en Git.** El chart genera una contraseña
+  aleatoria en el Secret `kps-grafana`. Se copia al portapapeles de Windows
+  sin mostrarla en pantalla:
+  `kubectl get secret -n monitoring kps-grafana -o jsonpath='{.data.admin-password}' | base64 -d | clip.exe`.
+  Grafana va sin persistencia: los dashboards llegan como ConfigMaps, a
+  través de su sidecar.
+- **Alertmanager sin destinos externos.** Todas las alertas van al receptor
+  `null`, que no envía nada. Se verifican en su interfaz y en su API, lo
+  que basta para el Experimento F.
+- **PodMonitor de PostgreSQL creado a mano**
+  ([`k8s/09-podmonitor-cnpg.yaml`](k8s/09-podmonitor-cnpg.yaml)). La
+  documentación de CloudNativePG 1.30 marca `.spec.monitoring.enablePodMonitor`
+  como obsoleto y recomienda crear el PodMonitor aparte. Selecciona los pods
+  con `cnpg.io/cluster: agroeco-pg` y lee el puerto `metrics`.
+- **Dashboard oficial de CloudNativePG**
+  ([`monitoring/dashboard-cnpg.yaml`](monitoring/dashboard-cnpg.yaml)).
+  Viene del repositorio `cloudnative-pg/grafana-dashboards`, fijado en el
+  commit `7dd1bc2` y con el SHA-256 del original en la cabecera, sin copiar
+  JSON a mano.
+  - **Un solo cambio sobre el original:** `${DS_EXPRESSION}` pasa a
+    `__expr__` en el único panel que usa expresiones. Ese hueco solo se
+    rellena al importar el dashboard a mano.
+  - **Se aplica con `kubectl apply --server-side`.** Pesa unos 290 KB, y la
+    anotación `last-applied-configuration` del apply normal superaría el
+    límite de 256 KB.
+
+**La alerta, en el chart y desplegada por ArgoCD.** La regla
+`AgroecoEtlJobFallido` está en el propio chart
+([`templates/prometheusrule.yaml`](charts/agroeco-etl/templates/prometheusrule.yaml)):
+- Se activa con `alertas.enabled`, que vale `false` por defecto y en dev, y
+  `true` en prod.
+- Se dispara con `kube_job_status_failed{namespace="agroeco"} > 0` durante
+  1 minuto, con `severity: warning` y anotaciones con el Job, el namespace
+  y el comando para ver sus logs.
+- Va en el chart 0.3.0 sin cambiar `appVersion`, así que el CI no construye
+  imagen y prod sigue con el mismo digest.
+
+Antes del push hay que hacer dos cosas:
+- **Instalar los CRD.** `PrometheusRule` no es un tipo propio de
+  Kubernetes, sino de un CRD. Sin él, ArgoCD no puede comparar ni aplicar
+  el objeto, y falla la sincronización entera, CronJob incluido. Además, la
+  Application no puede instalar el CRD por su cuenta, porque el AppProject
+  no admite objetos de ámbito de clúster. Lo instala la release de Helm de
+  kube-prometheus-stack.
+- **Ampliar el AppProject.** Hay que añadir `monitoring.coreos.com/PrometheusRule`
+  a los tipos permitidos, y nada más
+  ([`argocd/01-proyecto-agroeco.yaml`](argocd/01-proyecto-agroeco.yaml)).
+  Sin ese cambio, ArgoCD rechaza el objeto por no estar permitido en el
+  proyecto.
+
+**Resultados de la instalación** (26-11-2026).
+
+| Comprobación | Resultado |
+|--------------|-----------|
+| Recursos antes de instalar | WSL limitado a 10 GB y 8 CPU (`.wslconfig`); el clúster usaba unos 2,2 GB entre los 3 nodos y había 7,4 GB disponibles |
+| `helm upgrade --install` | Unos 2 min, `deployed`. Solo apareció el aviso `warn` de PodSecurity `restricted` para node-exporter (`hostNetwork`, `hostPID`, `hostPath`), el esperado |
+| Pods | 8 `Running` sin reinicios: `alertmanager` 2/2, `grafana` 3/3, `kube-state-metrics`, `operator`, 3 `node-exporter` (uno por nodo, sin problemas en k3d) y `prometheus` 2/2 |
+| Almacenamiento y CRD | PVC de Prometheus de 2Gi en `local-path`, `Bound`; 10 CRD de `monitoring.coreos.com` |
+| Objetivos de Prometheus | 23, ninguno caído (`up == 0` no devuelve nada) |
+| PostgreSQL | `cnpg_collector_up = 1` en `agroeco-pg-1` y `agroeco-pg-2` |
+| Dashboard | `configmap/dashboard-cnpg serverside-applied` |
+| Chart 0.3.0 (commit `aa73ca0`, push a las 15:58:00) | El CI tardó 9 s, solo con «Validar chart»: no cambia `appVersion`, así que no construye imagen. ArgoCD en `aa73ca0`, `Synced`/`Healthy`. La PrometheusRule `agroeco-etl` se creó en `agroeco` hacia las 15:58, en el mismo minuto del push |
+| Regla antes del Experimento F | `AgroecoEtlJobFallido` en `inactive`, salud `ok` (evaluada a las 16:02:40); 0 alertas en Alertmanager |
+
+**Acceso.** Ninguna interfaz se expone fuera del clúster. Se accede con
+`kubectl port-forward` desde WSL:
+
+```bash
+kubectl port-forward -n monitoring svc/kps-prometheus 9090:9090      # http://localhost:9090
+kubectl port-forward -n monitoring svc/kps-alertmanager 9093:9093    # http://localhost:9093
+kubectl port-forward -n monitoring svc/kps-grafana 3000:80           # http://localhost:3000 (usuario admin)
+```
+
+Captura: `25_grafana_cnpg.png` (dashboard oficial de CloudNativePG con el
+namespace `agroeco` y el clúster `agroeco-pg`).
+
 ## Tareas pendientes
 
 | Fase | Tarea | Motivo |
 |------|-------|--------|
 | 2 | Actualizar cert-manager a la serie 1.22 cuando se publique | La v1.21.3 no incluye Kubernetes 1.37 en su matriz de soporte (ver Decisiones técnicas). |
 | 4 | _(Opcional)_ Webhook de GitHub hacia ArgoCD | Con la consulta periódica, un commit tarda unos 3 min en llegar a prod (2 min 48,7 s en el Experimento E (2)). Con el webhook bajaría a segundos. Necesita exponer el servidor de ArgoCD a GitHub, algo que hoy no se hace: solo se accede por `kubectl port-forward`. |
-| 4 | _(Opcional)_ Borrar el Secret `argocd-initial-admin-secret` | Después de cambiar la contraseña de admin, ese Secret ya no sirve y solo guarda una credencial en el clúster. |
+| 5 | _(Opcional)_ Un receptor real en Alertmanager (correo o webhook) | Hoy las alertas solo se ven en la interfaz y en la API de Alertmanager (receptor `null`). La credencial del destino iría en un Secret creado con `kubectl`, nunca en Git. |
+| 5 | _(Opcional)_ Resolver la alerta del ETL cuando un reintento termina bien | Añadir `unless on(namespace, job_name) kube_job_status_succeeded > 0` a la expresión, para que un Job con un reintento correcto no mantenga la alerta activa (ver Experimento F). |
 
 ## Mejoras posibles
 

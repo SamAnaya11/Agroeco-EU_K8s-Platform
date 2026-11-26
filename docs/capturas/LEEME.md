@@ -80,12 +80,13 @@ momento exacto de cada una con el aviso **📸 CAPTURA NN**.
 | 24a | `24a_exp_E_promocion.png` | Experimento E (2), paso 4.5, terminal Ubuntu 2: vigilancia del CronJob con hora durante el push del commit de promoción | La línea de `agroeco-etl:0.1.0` con `generation` 6 y la de `ghcr.io/samanaya11/agroeco-etl:0.2.1@sha256:5c06…` con `generation` 7 a las 21:16:03.516 | Usuario del prompt |
 | 24b | `24b_exp_E_promocion.png` | Experimento E (2), paso 4.5, terminal Ubuntu 1, tras la sincronización y la ejecución manual | De arriba abajo: `git log -1 --oneline` con `40b97d8`; Application en `40b97d8`, `Synced`, `Healthy`, `true`; `kubectl get job` con `etl-promocion-021` `Complete`, `1/1` y `88s`; `imageID` con el digest; log con `agroeco-etl 0.2.1`, la carga en PostgreSQL y `Pipeline terminado correctamente`; `Líneas DEBUG en prod: 0` | Usuario del prompt |
 
-### Fase 5 – Observabilidad _(opcional)_
+### Fase 5 – Observabilidad
 
 | Nº | Archivo | Paso exacto | Qué debe verse | Tapar |
 |----|---------|-------------|----------------|-------|
-| 25 | `25_grafana_cnpg.png` | Dashboard de CloudNativePG en Grafana | Métricas del clúster PostgreSQL | Contraseña de Grafana |
-| 26 | `26_exp_F_alerta.png` | Experimento F: Job fallido forzado | Alerta en estado `Firing` | — |
+| 25 | `25_grafana_cnpg.png` | Fase 5, navegador: Grafana por `kubectl port-forward` (3000:80), dashboard oficial de CloudNativePG | Dashboard oficial de CloudNativePG con las variables `namespace` = `agroeco` y `cluster` = `agroeco-pg`, y sus paneles con datos | — |
+| 26a | `26a_exp_F_cronologia.png` | Experimento F, terminal Ubuntu 1: vigilancia cada 5 s del Job, de la regla en la API de Prometheus y de las alertas en la API v2 de Alertmanager | T0 (`kubectl apply` a las 16:05:26); la cronología de `inactive` a `pending` (16:06:10) y a `firing` con `alertmanager=1` (16:07:15); el `ValueError: Valor no válido para ETL_CARGAR_BD: 'quizas'` del log | Usuario del prompt |
+| 26b | `26b_exp_F_alertmanager.png` | Experimento F, navegador: interfaz de Alertmanager por `kubectl port-forward` (9093) con la alerta activa | La alerta `AgroecoEtlJobFallido` con sus etiquetas (`job_name=etl-experimento-f`, `namespace=agroeco`, `severity=warning`) y sus anotaciones (`summary` y `description` con el comando `kubectl logs`) | — |
 
 ### Fase 6 – AKS _(opcional, con coste)_
 
