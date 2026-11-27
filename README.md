@@ -229,7 +229,14 @@ _(Se completará con las versiones exactas verificadas en cada fase.)_
 
 ## Reproducción
 
-_(Pendiente.)_
+El clúster completo se reconstruye desde cero con el runbook
+[`docs/RECONSTRUCCION.md`](docs/RECONSTRUCCION.md). Tiene 16 bloques
+numerados y en orden, del `k3d cluster create --config k3d/cluster.yaml` a
+la verificación final, con las versiones fijadas del proyecto, una espera y
+una comprobación en cada bloque. Los secretos se regeneran con `openssl` o
+con el CLI de Garage y pasan a `kubectl create secret` sin mostrarse nunca.
+Una foto previa y una comparación final permiten contrastar el estado de
+antes y el de después (Experimento G).
 
 ## Validación de la carga
 
@@ -283,7 +290,7 @@ Capturas: `13a_consulta_datos.png` (recuentos, vista y réplica) y
 | D | Mismo chart, distintos entornos | ✅ Un solo chart y una sola imagen generan dos entornos: prod carga en PostgreSQL con `verify-full` cada mes; dev solo extrae y limpia, con el CronJob suspendido y menos memoria reservada, sin base de datos ni Secrets |
 | E | GitOps: corrección de drift y despliegue desde Git | (1) ✅ ArgoCD revierte un cambio manual del CronJob en 2,0 s, con una sincronización parcial automática; los campos que Git no define no se vigilan · (2) ✅ un commit en `values-prod.yaml` lleva a prod la imagen probada por el CI en 2 min 48,7 s, sin `kubectl` ni `helm` contra prod |
 | F | Alerta ante fallo del Job | ✅ Un Job fallido dispara `AgroecoEtlJobFallido` en Alertmanager en 1 min 49 s; al borrar el Job, la alerta se resuelve en 26 s |
-| G | Limpieza completa | _pendiente_ |
+| G | Reconstrucción completa desde el repositorio | 🔄 En curso: runbook [`docs/RECONSTRUCCION.md`](docs/RECONSTRUCCION.md) preparado; falta el borrado y la reconstrucción cronometrada |
 
 ### A · Autocuración
 
@@ -780,6 +787,36 @@ Capturas: `26a_exp_F_cronologia.png` (T0, la cronología de `inactive` a
 `pending` y a `firing` con 1 alerta en Alertmanager, y el `ValueError` del
 log) y `26b_exp_F_alertmanager.png` (la alerta en la interfaz de
 Alertmanager, con sus etiquetas y sus anotaciones).
+
+### G · Reconstrucción completa desde el repositorio _(en curso)_
+
+**Objetivo.** Borrar el clúster con `k3d cluster delete` y reconstruirlo
+solo con lo que hay en el repositorio. El experimento comprueba que el
+proyecto se reproduce de cero y mide cuánto tarda cada bloque.
+
+**Hallazgo previo al borrado.** Al preparar el runbook se comprobó qué
+estaba realmente en Git:
+- **Ya estaban en el repositorio:** la configuración del clúster
+  ([`k3d/cluster.yaml`](k3d/cluster.yaml)), los manifiestos y los valores
+  de ArgoCD y kube-prometheus-stack, con su comando de instalación en la
+  cabecera.
+- **Solo estaban en el historial de las sesiones de trabajo:** los comandos
+  de instalación de cert-manager, CloudNativePG y el Barman Cloud Plugin
+  (repositorio, chart y versión), y la configuración de Garage (layout,
+  bucket, clave y permisos).
+
+Con el clúster borrado, quien partiera solo del repositorio tendría las
+versiones (tabla del stack), pero no los comandos ni los pasos de Garage:
+habría tenido que deducirlos. El propio `k8s/05-garage.yaml` remitía al
+README para esos pasos, y el README no los tenía. El runbook [`docs/RECONSTRUCCION.md`](docs/RECONSTRUCCION.md)
+cierra ese hueco antes del borrado. Además, la sintaxis del CLI de Garage
+se contrastó con el código de la v2.5.0 (`garage node id -q`,
+`layout assign -z -c`, `layout apply --version`, `bucket allow --read --write --key`
+y el formato de salida de `key create`). El runbook valida el formato del
+ID y del secreto de la clave antes de crear el Secret.
+
+**Resultados:** _pendientes de la ejecución_ (tabla de tiempos al final del
+runbook).
 
 ## Backup y restauración
 
